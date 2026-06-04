@@ -1,6 +1,6 @@
 # OfferSafe
 
-A web app that helps you verify job offers and avoid recruitment scams. Built with Next.js, Supabase, and AI-powered analysis via Gemini and Groq.
+Scam risk analyzer for job and internship offers. Built for students and job seekers in India who want to verify an offer before sharing documents or sending money.
 
 Live: https://offer-safe.vercel.app
 
@@ -8,16 +8,18 @@ Live: https://offer-safe.vercel.app
 
 ## What it does
 
-Paste or upload a job offer and the app analyzes it for red flags — suspicious salary promises, vague company details, requests for personal info upfront, and other common scam patterns. It uses Gemini and Groq to do the heavy lifting and Resend to email you the results.
+You paste in whatever you received — recruiter message, offer letter, payment request, company details — and it gives you an evidence-based risk score. It also cross-references against community-reported scam cases, so if someone else already reported the same company or recruiter, it'll catch that too.
+
+There's also a public scam reports page where anyone can browse or submit known cases.
 
 ---
 
 ## Stack
 
 - Next.js 14 + TypeScript
-- Supabase — auth and database
-- Gemini API + Groq API — AI analysis
-- Resend — email delivery
+- Supabase — database and auth
+- Gemini API + Groq API — AI risk analysis
+- Resend — email
 - Tailwind CSS
 - Deployed on Vercel
 
@@ -42,8 +44,12 @@ GROQ_API_KEY=
 RESEND_API_KEY=
 ```
 
-Then run the Supabase migrations from `supabase/migrations/` and start the dev server:
+Run migrations from `supabase/migrations/`, then:
 
 ```bash
 npm run dev
 ```
+
+---
+
+*Not legal advice. For awareness only.*
