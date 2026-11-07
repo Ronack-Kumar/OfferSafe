@@ -4,6 +4,8 @@ Scam risk analyzer for job and internship offers. Built for students and job see
 
 Live: https://offer-safe.vercel.app
 
+![OfferSafe job-offer risk analysis homepage](docs/screenshots/app-preview.webp)
+
 ---
 
 ## What it does
@@ -28,7 +30,7 @@ There's also a public scam reports page where anyone can browse or submit known 
 ## Running locally
 
 ```bash
-git clone https://github.com/Raunack/OfferSafe.git
+git clone https://github.com/Ronack-Kumar/OfferSafe.git
 cd OfferSafe
 npm install
 cp .env.local.example .env.local
