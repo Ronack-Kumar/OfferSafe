@@ -46,7 +46,37 @@ type CaseRow = {
         url: string;
       }>
     | null;
+  /** Added by the free verification checks; absent on older reports. */
+  verification_checks_json?: Array<{
+    id: string;
+    target: string | null;
+    status: "flagged" | "passed" | "info" | "skipped" | "unavailable";
+    detail: string;
+  }> | null;
 };
+
+const CHECK_LABELS: Record<string, string> = {
+  domain_age: "Domain age",
+  email_disposable: "Disposable inbox",
+  email_mx: "Email can receive mail",
+  mca_registry: "Official company registry (MCA)",
+  reddit: "Reddit scam reports",
+};
+
+function checkStatusBadge(status: string): { label: string; className: string } {
+  switch (status) {
+    case "flagged":
+      return { label: "Red flag", className: "status-badge border border-[#f5c6c2] bg-[var(--danger-bg)] text-[var(--danger)]" };
+    case "passed":
+      return { label: "OK", className: "status-badge border border-[#bbe5c8] bg-[var(--safe-bg)] text-[var(--safe)]" };
+    case "info":
+      return { label: "Info", className: "status-badge border border-[#c7d2fe] bg-[#eef2ff] text-[#3730a3]" };
+    case "unavailable":
+      return { label: "Check unavailable", className: "status-badge border border-[#d1d5db] bg-[#f3f4f6] text-[#374151]" };
+    default:
+      return { label: "Not applicable", className: "status-badge border border-[#d1d5db] bg-[#f3f4f6] text-[#374151]" };
+  }
+}
 
 type ScamCaseRow = {
   id: string;
@@ -98,14 +128,12 @@ export default async function ResultPage({ params }: { params: { id: string } })
   const explanations = row.explanation_json?.signalExplanations ?? {};
   const nextSteps = row.explanation_json?.nextSteps ?? [];
   const score = row.risk_score ?? 0;
+  const verificationChecks = (row.verification_checks_json ?? []).filter((check) => check.status !== "skipped");
   const redditRaw = row.reddit_mentions_json;
   const redditMentions = Array.isArray(redditRaw) ? redditRaw : redditRaw?.posts ?? [];
   const redditCommentsByPost = Array.isArray(redditRaw) ? {} : redditRaw?.comments ?? {};
-
-  function truncateComment(text: string): string {
-    if (text.length <= 150) return text;
-    return `${text.slice(0, 150)}...`;
-  }
+  // Older reports have no verification checks; treat their stored Reddit data as available.
+  const redditAvailable = row.verification_checks_json?.find((check) => check.id === "reddit")?.status !== "unavailable";
 
   const inputEntries = Object.entries(row.inputs_json ?? {}).filter(([, value]) => String(value ?? "").trim().length > 0);
   const missingFields = [
@@ -186,7 +214,30 @@ export default async function ResultPage({ params }: { params: { id: string } })
         )}
       </section>
 
-      <RedditSection companyName={String(row.inputs_json?.companyName ?? "")} />
+      {verificationChecks.length > 0 ? (
+        <section className="card space-y-3">
+          <h2 className="text-xl font-semibold">Free verification checks</h2>
+          <ul className="space-y-3">
+            {verificationChecks.map((check, index) => {
+              const badge = checkStatusBadge(check.status);
+              return (
+                <li key={`${check.id}-${check.target ?? index}`} className="rounded-lg border border-slate-200 p-4">
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-semibold">{CHECK_LABELS[check.id] ?? check.id.replaceAll("_", " ")}</h3>
+                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badge.className}`}>{badge.label}</span>
+                  </div>
+                  <p className="break-words text-sm text-slate-600">{check.detail}</p>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="text-xs text-slate-500">
+            Registry results come from a snapshot of MCA data and are information, not verification.
+          </p>
+        </section>
+      ) : null}
+
+      <RedditSection posts={redditMentions} comments={redditCommentsByPost} available={redditAvailable} />
 
       {matchedCase ? (
         <section className="card space-y-3">

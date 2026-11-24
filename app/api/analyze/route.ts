@@ -1,6 +1,9 @@
+import { MISSING_SUPABASE_ENV, supabasePublicKey } from "@/lib/supabase-key";
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import Groq from "groq-sdk";
+import { runFreeChecks, type FreeCheckOutput, type FreeCheckSignalKey } from "@/lib/checks";
+import { findCinInText, isValidCinFormat, normalizeCin } from "@/lib/checks/mca";
 
 type SignalSeverity = "critical" | "high" | "medium" | "low";
 
@@ -24,7 +27,12 @@ type SignalKey =
   | "poor_formatting"
   | "vague_role"
   | "reddit_mentions"
-  | "reddit_comment_scam_score";
+  | "reddit_comment_scam_score"
+  // Added by the free verification checks (lib/checks).
+  | "email_disposable"
+  | "email_no_mx"
+  | "cin_not_found"
+  | "company_not_active";
 
 type TriggeredSignal = {
   key: SignalKey;
@@ -45,29 +53,6 @@ type ScamCase = {
   source_note: string | null;
   severity: string;
   status: string;
-};
-
-type RedditMention = {
-  id: string;
-  title: string;
-  subreddit: string;
-  score: number;
-  permalink: string;
-  url: string;
-  created_utc: number;
-};
-
-type RedditComment = {
-  id: string;
-  author: string;
-  body: string;
-  score: number;
-  created_utc: number;
-};
-
-type RedditMentionsPayload = {
-  posts: RedditMention[];
-  comments: Record<string, RedditComment[]>;
 };
 
 type AnalyzePayload = {
@@ -118,9 +103,25 @@ const SIGNALS: Record<SignalKey, { weight: number; severity: SignalSeverity }> =
   vague_role: { weight: 5, severity: "low" },
   reddit_mentions: { weight: 20, severity: "high" },
   reddit_comment_scam_score: { weight: 10, severity: "high" },
+  email_disposable: { weight: 25, severity: "high" },
+  email_no_mx: { weight: 20, severity: "high" },
+  cin_not_found: { weight: 20, severity: "high" },
+  company_not_active: { weight: 20, severity: "high" },
 };
 
-const REDDIT_SUBREDDITS = ["india", "indianworkplace", "cscareerquestions"];
+/** Free-check signals whose report text comes from the check itself (it carries dates). */
+const FREE_CHECK_SIGNAL_KEYS: ReadonlySet<SignalKey> = new Set<FreeCheckSignalKey>([
+  "domain_age_new",
+  "email_disposable",
+  "email_no_mx",
+  "cin_invalid_format",
+  "cin_not_found",
+  "company_not_active",
+]);
+
+/** At or above this score the verdict is already clear, so AI extraction is skipped. */
+const CLEAR_RESULT_SCORE = 66;
+
 const REDDIT_COMMENT_KEYWORDS = [
   "paid",
   "fee",
@@ -189,8 +190,6 @@ const PAID_TRAINING_KEYWORDS = [
   "certification fee before joining",
   "placement after course",
 ];
-
-const CIN_REGEX = /^[A-Z]\d{5}[A-Z]{2}\d{4}[A-Z]\d{6}$/;
 
 function toText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -395,213 +394,16 @@ function parseGroqJson(raw: string): {
   return fallback;
 }
 
-function normalizeRedditMention(item: unknown): RedditMention | null {
-  if (!item || typeof item !== "object") return null;
-  const data = item as Record<string, unknown>;
-  const id = typeof data.id === "string" ? data.id : "";
-  const title = typeof data.title === "string" ? data.title : "";
-  const subreddit = typeof data.subreddit === "string" ? data.subreddit : "";
-  const score = typeof data.score === "number" ? data.score : Number(data.score || 0);
-  const permalink = typeof data.permalink === "string" ? data.permalink : "";
-  const url = typeof data.url === "string" ? data.url : "";
-  const created = typeof data.created_utc === "number" ? data.created_utc : Number(data.created_utc || 0);
-  if (!id || !title || !subreddit || !permalink) return null;
-  return {
-    id,
-    title,
-    subreddit,
-    score: Number.isFinite(score) ? score : 0,
-    permalink,
-    url,
-    created_utc: Number.isFinite(created) ? created : 0,
-  };
-}
-
-function normalizeRedditComment(item: unknown): RedditComment | null {
-  if (!item || typeof item !== "object") return null;
-  const data = item as Record<string, unknown>;
-  const id = typeof data.id === "string" ? data.id : "";
-  const author = typeof data.author === "string" ? data.author : "";
-  const body = typeof data.body === "string" ? data.body : "";
-  const score = typeof data.score === "number" ? data.score : Number(data.score || 0);
-  const created = typeof data.created_utc === "number" ? data.created_utc : Number(data.created_utc || 0);
-  if (!id || !author || !body.trim()) return null;
-  return {
-    id,
-    author,
-    body: body.trim(),
-    score: Number.isFinite(score) ? score : 0,
-    created_utc: Number.isFinite(created) ? created : 0,
-  };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function commentHasScamKeyword(body: string): boolean {
   return containsAny(body, REDDIT_COMMENT_KEYWORDS);
 }
 
-function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-
-  for (const value of values) {
-    const v = toText(value);
-    if (!v) continue;
-    const key = lower(v);
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(v);
-    }
-  }
-
-  return out;
-}
-
-function simplifyCompanyName(name: string): string[] {
-  const raw = toText(name);
-  if (!raw) return [];
-
-  const cleaned = raw
-    .replace(
-      /\b(private limited|pvt\.?\s*ltd\.?|limited|ltd\.?|llp|inc\.?|technologies|technology|solutions|fintech)\b/gi,
-      " ",
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const parts = cleaned.split(" ").filter(Boolean);
-
-  const variants = [
-    raw,
-    cleaned,
-    parts.slice(0, 1).join(" "),
-    parts.slice(0, 2).join(" "),
-  ];
-
-  return uniqueNonEmpty(variants);
-}
-
-async function fetchRedditSearch(query: string): Promise<RedditMention[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://offer-safe.vercel.app";
-  const endpoint = `${baseUrl}/api/reddit?q=${encodeURIComponent(query)}`;
-  try {
-    const res = await fetch(endpoint, {
-      cache: "no-store",
-    });
-
-    if (!res.ok) return [];
-
-    const payload = (await res.json()) as {
-      data?: { children?: Array<{ data?: unknown }> };
-    };
-
-    const children = payload.data?.children || [];
-    const mentions: RedditMention[] = [];
-
-    for (const child of children) {
-      const normalized = normalizeRedditMention(child.data);
-      if (normalized) mentions.push(normalized);
-    }
-
-    return mentions;
-  } catch {
-    return [];
-  }
-}
-
-async function fetchRedditSearchWithRetry(query: string, retries = 1): Promise<RedditMention[]> {
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
-    const result = await fetchRedditSearch(query);
-    if (result.length > 0) return result;
-    if (attempt < retries) {
-      await delay(700 * attempt);
-    }
-  }
-  return [];
-}
-
-function buildRedditQueries(companyNames: string[]): string[] {
-  const queries: string[] = [];
-  for (const company of companyNames.slice(0, 2)) {
-    queries.push(
-      `${company} scam`,
-      `${company} job fraud`,
-    );
-  }
-  return uniqueNonEmpty(queries);
-}
-
-async function fetchRedditMentions(companyNames: string[]): Promise<RedditMention[]> {
-  const queries = buildRedditQueries(companyNames);
-  if (queries.length === 0) return [];
-
-  const settled = await Promise.all(queries.map((q) => fetchRedditSearchWithRetry(q)));
-  const merged = new Map<string, RedditMention>();
-
-  for (const items of settled) {
-    for (const item of items) {
-      if (!merged.has(item.id)) {
-        merged.set(item.id, item);
-      }
-    }
-  }
-
-  return [...merged.values()].sort((a, b) => b.score - a.score);
-}
-
-async function fetchPostComments(post: RedditMention): Promise<RedditComment[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://offer-safe.vercel.app";
-  const endpoint = `${baseUrl}/api/reddit?q=${encodeURIComponent(post.title)}&type=comments&id=${encodeURIComponent(post.id)}&subreddit=${encodeURIComponent(post.subreddit)}`;
-  try {
-    const res = await fetch(endpoint, {
-      cache: "no-store",
-    });
-
-    if (!res.ok) return [];
-
-    const payload = (await res.json()) as Array<{
-      data?: { children?: Array<{ data?: unknown }> };
-    }>;
-
-    const commentListing = payload?.[1]?.data?.children || [];
-    const comments: RedditComment[] = [];
-
-    for (const child of commentListing) {
-      const normalized = normalizeRedditComment(child.data);
-      if (normalized) comments.push(normalized);
-    }
-
-    return comments.slice(0, 10);
-  } catch {
-    return [];
-  }
-}
-
-async function fetchRedditMentionsWithComments(companyNames: string[]): Promise<RedditMentionsPayload> {
-  const posts = await fetchRedditMentions(companyNames);
-  const comments: Record<string, RedditComment[]> = {};
-  const topPosts = [...posts].slice(0, 5);
-
-  for (let i = 0; i < topPosts.length; i += 1) {
-    const post = topPosts[i];
-    comments[post.id] = await fetchPostComments(post);
-    if (i < topPosts.length - 1) {
-      await delay(500);
-    }
-  }
-
-  return { posts, comments };
-}
-
 async function supabaseRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const anon = supabasePublicKey();
 
   if (!url || !anon) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    throw new Error(MISSING_SUPABASE_ENV);
   }
 
   const res = await fetch(`${url}/rest/v1/${path}`, {
@@ -706,205 +508,250 @@ export async function POST(req: Request) {
       `Extracted Text: ${input.extractedText || ""}`,
     ].join("\n");
 
-    const extractedEntities = await extractEntitiesWithGemini(input, fullSubmittedText);
-    const emailDomain = extractedEntities.emailDomain || extractEmailDomain(input.recruiterEmail || "");
-    const websiteDomain = extractedEntities.websiteDomain || extractDomain(input.website || "");
+    // 1. Free, deterministic work first: regex entity extraction, known-case data, free checks.
+    const scamCasesPromise = supabaseRequest<ScamCase[]>("scam_cases?status=eq.approved&select=*");
+    const fallbackEntities = fallbackEntityExtraction(input, fullSubmittedText);
 
-    const scamCases = await supabaseRequest<ScamCase[]>("scam_cases?status=eq.approved&select=*");
+    const freeCheckInputFor = (entities: ExtractedEntities) => ({
+      recruiterEmail: input.recruiterEmail,
+      website: input.website || entities.websiteDomain || "",
+      text: fullText,
+      companyName: entities.companyName || input.companyName || "",
+      cin: input.cin || entities.cin || findCinInText(fullText) || "",
+    });
 
-    let matchedCase: ScamCase | null = null;
-    const companyInput = lower(extractedEntities.companyName || input.companyName || "");
-
-    for (const c of scamCases) {
-      const companyHit = (c.company_name_variants || []).some((v) => {
-        const vv = lower(v || "");
-        return vv.length > 0 && companyInput.length > 0 && (companyInput.includes(vv) || vv.includes(companyInput));
-      });
-
-      const emailHit = (c.email_patterns || []).some(
-        (p) => p && input.recruiterEmail && lower(input.recruiterEmail).includes(lower(p)),
-      );
-
-      const domainHit = (c.domain_patterns || []).some((p) => {
-        if (!p || !websiteDomain) return false;
-        const candidate = lower(p);
-        return websiteDomain === candidate || websiteDomain.endsWith(`.${candidate}`);
-      });
-
-      if (companyHit || emailHit || domainHit) {
-        matchedCase = c;
-        break;
-      }
-    }
-
-    const redditCompanyNames = uniqueNonEmpty([
-      extractedEntities.companyName,
-      input.companyName,
-      matchedCase?.case_name,
-      ...(matchedCase?.company_name_variants || []),
-      ...simplifyCompanyName(extractedEntities.companyName || input.companyName || ""),
+    const [scamCases, initialFreeChecks] = await Promise.all([
+      scamCasesPromise,
+      runFreeChecks(freeCheckInputFor(fallbackEntities)),
     ]);
 
-    const redditMentionsData = await fetchRedditMentionsWithComments(redditCompanyNames);
-    const strongRedditMentions = redditMentionsData.posts.filter((item) => item.score >= 1);
-    const scamKeywordCommentCount = Object.values(redditMentionsData.comments)
-      .flat()
-      .filter((comment) => commentHasScamKeyword(comment.body)).length;
+    const evaluate = (extractedEntities: ExtractedEntities, freeChecks: FreeCheckOutput) => {
+      const emailDomain = extractedEntities.emailDomain || extractEmailDomain(input.recruiterEmail || "");
+      const websiteDomain = extractedEntities.websiteDomain || extractDomain(input.website || "");
 
-    const triggered: TriggeredSignal[] = [];
+      let matchedCase: ScamCase | null = null;
+      const companyInput = lower(extractedEntities.companyName || input.companyName || "");
 
-    const addSignal = (key: SignalKey, reason: string) => {
-      const exists = triggered.some((s) => s.key === key);
-      if (!exists) {
-        triggered.push({
-          key,
-          weight: SIGNALS[key].weight,
-          severity: SIGNALS[key].severity,
-          reason,
+      for (const c of scamCases) {
+        const companyHit = (c.company_name_variants || []).some((v) => {
+          const vv = lower(v || "");
+          return vv.length > 0 && companyInput.length > 0 && (companyInput.includes(vv) || vv.includes(companyInput));
         });
-      }
-    };
 
-    const addCustomSignal = (key: SignalKey, reason: string, weight: number, severity: SignalSeverity) => {
-      const exists = triggered.some((s) => s.key === key);
-      if (!exists) {
-        triggered.push({
-          key,
-          weight,
-          severity,
-          reason,
+        const emailHit = (c.email_patterns || []).some(
+          (p) => p && input.recruiterEmail && lower(input.recruiterEmail).includes(lower(p)),
+        );
+
+        const domainHit = (c.domain_patterns || []).some((p) => {
+          if (!p || !websiteDomain) return false;
+          const candidate = lower(p);
+          return websiteDomain === candidate || websiteDomain.endsWith(`.${candidate}`);
         });
+
+        if (companyHit || emailHit || domainHit) {
+          matchedCase = c;
+          break;
+        }
       }
-    };
 
-    if (matchedCase) {
-      addSignal("known_scam_match", `Matched known scam case: ${matchedCase.case_name}`);
-    }
 
-    if (emailDomain && FREE_EMAIL_DOMAINS.has(emailDomain)) {
-      addSignal("email_free_provider", `Recruiter email uses free provider (${emailDomain}).`);
-    }
+      // Reddit (OAuth, optional): only posts/comments that are clear scam reports are kept.
+      const redditMentionsData = freeChecks.reddit;
+      const strongRedditMentions = redditMentionsData.posts.filter((item) => item.score >= 1);
+      const scamKeywordCommentCount = Object.values(redditMentionsData.comments)
+        .flat()
+        .filter((comment) => commentHasScamKeyword(comment.body)).length;
 
-    if (emailDomain && websiteDomain && emailDomain !== websiteDomain && !emailDomain.endsWith(`.${websiteDomain}`)) {
-      addSignal("email_domain_mismatch", "Recruiter email domain does not match submitted website domain.");
-    }
+      const triggered: TriggeredSignal[] = [];
 
-    const cinValue = extractedEntities.cin || input.cin || "";
+      const addSignal = (key: SignalKey, reason: string) => {
+        const exists = triggered.some((s) => s.key === key);
+        if (!exists) {
+          triggered.push({
+            key,
+            weight: SIGNALS[key].weight,
+            severity: SIGNALS[key].severity,
+            reason,
+          });
+        }
+      };
 
-    if (cinValue) {
-      if (!CIN_REGEX.test(cinValue)) {
-        addSignal("cin_invalid_format", "CIN provided but format is invalid.");
+      const addCustomSignal = (key: SignalKey, reason: string, weight: number, severity: SignalSeverity) => {
+        const exists = triggered.some((s) => s.key === key);
+        if (!exists) {
+          triggered.push({
+            key,
+            weight,
+            severity,
+            reason,
+          });
+        }
+      };
+
+      if (matchedCase) {
+        addSignal("known_scam_match", `Matched known scam case: ${matchedCase.case_name}`);
       }
-    } else {
-      addSignal("cin_missing", "No CIN provided.");
-    }
 
-    const registeredClaim =
-      Boolean(cinValue) || /(registered|pvt ltd|private limited|llp|inc)/i.test(`${input.companyName} ${fullText}`);
+      if (emailDomain && FREE_EMAIL_DOMAINS.has(emailDomain)) {
+        addSignal("email_free_provider", `Recruiter email uses free provider (${emailDomain}).`);
+      }
 
-    if (registeredClaim && emailDomain && (emailDomain === "gmail.com" || emailDomain === "yahoo.com")) {
-      addSignal("gmail_as_official", "Registered company claim with gmail/yahoo official contact.");
-    }
+      if (emailDomain && websiteDomain && emailDomain !== websiteDomain && !emailDomain.endsWith(`.${websiteDomain}`)) {
+        addSignal("email_domain_mismatch", "Recruiter email domain does not match submitted website domain.");
+      }
 
-    if (containsAny(fullText, PAYMENT_KEYWORDS)) {
-      addSignal("payment_requested", "Payment/fee/deposit language found in submitted text.");
-    }
+      const cinValue = extractedEntities.cin || input.cin || findCinInText(fullText) || "";
 
-    const reimbursementTrap =
-      /(reimburse after joining|will be reimbursed)/i.test(fullText) && /(purchase|buy)/i.test(fullText);
+      if (cinValue) {
+        if (!isValidCinFormat(cinValue)) {
+          addSignal("cin_invalid_format", "CIN provided but format is invalid.");
+        }
+      } else {
+        addSignal("cin_missing", "No CIN provided.");
+      }
 
-    if (reimbursementTrap) {
-      addSignal("reimbursement_trap", "Contains reimbursement-after-joining plus purchase/buy language.");
-    }
+      const registeredClaim =
+        Boolean(cinValue) || /(registered|pvt ltd|private limited|llp|inc)/i.test(`${input.companyName} ${fullText}`);
 
-    if (containsAny(fullText, PAID_TRAINING_KEYWORDS)) {
-      addSignal("paid_training_placement", "Contains paid training/guaranteed placement language.");
-    }
+      if (registeredClaim && emailDomain && (emailDomain === "gmail.com" || emailDomain === "yahoo.com")) {
+        addSignal("gmail_as_official", "Registered company claim with gmail/yahoo official contact.");
+      }
 
-    if (!websiteDomain) {
-      addSignal("domain_missing", "No website URL provided.");
-    }
-    // domain_age_new removed — it fired for every site and inflated all scores
+      if (containsAny(fullText, PAYMENT_KEYWORDS)) {
+        addSignal("payment_requested", "Payment/fee/deposit language found in submitted text.");
+      }
+
+      const reimbursementTrap =
+        /(reimburse after joining|will be reimbursed)/i.test(fullText) && /(purchase|buy)/i.test(fullText);
+
+      if (reimbursementTrap) {
+        addSignal("reimbursement_trap", "Contains reimbursement-after-joining plus purchase/buy language.");
+      }
+
+      if (containsAny(fullText, PAID_TRAINING_KEYWORDS)) {
+        addSignal("paid_training_placement", "Contains paid training/guaranteed placement language.");
+      }
+
+      if (!websiteDomain) {
+        addSignal("domain_missing", "No website URL provided.");
+      }
+      // domain_age_new removed — it fired for every site and inflated all scores
     
 
-    const stipend = extractedEntities.stipendAmount;
-    const isInternship = /(intern|internship)/i.test(`${input.jobTitle} ${fullText}`);
-    const isFresher = /(fresher|entry level|graduate)/i.test(`${input.jobTitle} ${fullText}`);
+      const stipend = extractedEntities.stipendAmount;
+      const isInternship = /(intern|internship)/i.test(`${input.jobTitle} ${fullText}`);
+      const isFresher = /(fresher|entry level|graduate)/i.test(`${input.jobTitle} ${fullText}`);
 
-    if (stipend !== null) {
-      if ((isInternship && stipend > 80000) || (isFresher && stipend > 200000)) {
-        addSignal("unrealistic_stipend", "Stipend appears unrealistically high for role category.");
+      if (stipend !== null) {
+        if ((isInternship && stipend > 80000) || (isFresher && stipend > 200000)) {
+          addSignal("unrealistic_stipend", "Stipend appears unrealistically high for role category.");
+        }
+      }
+
+      if (containsAny(fullText, URGENCY_KEYWORDS)) {
+        addSignal("urgency_language", "Urgency phrases detected in offer text.");
+      }
+
+      if (!input.website && !input.linkedinUrl) {
+        addSignal("no_company_web_presence", "No website and no LinkedIn profile provided.");
+      }
+
+      const offerTextWordCount = fullText.trim().split(/\s+/).filter(Boolean).length;
+      if (offerTextWordCount > 50 && !containsAny(fullText, INTERVIEW_KEYWORDS)) {
+      addSignal("no_interview_mentioned", "No interview/test/assessment mentions in submitted text.");
+
+      }
+
+      if (/whatsapp/i.test(`${input.phone} ${fullText}`)) {
+        addSignal("whatsapp_only_recruitment", "WhatsApp appears to be primary/only recruitment channel.");
+      }
+
+      if (fullText && fullText.trim().split(/\s+/).filter(Boolean).length > 80) {
+        const checks = [
+          /(company address|address:)/i.test(fullText),
+          /(registration number|cin|incorporation no)/i.test(fullText),
+          /\b(date|dated)\b/i.test(fullText),
+          /(authorized signatory|authorised signatory|hr manager|signatory)/i.test(fullText),
+          /(letterhead|official letterhead|www\.)/i.test(fullText),
+        ];
+        const missingCount = checks.filter((ok) => !ok).length;
+        if (missingCount >= 3) {
+          addSignal("poor_formatting", "Offer text is missing multiple expected formal offer details.");
+        }
+      }
+
+      const titleWordCount = (input.jobTitle || "").split(/\s+/).filter(Boolean).length;
+      const roleWordCount = (input.roleDescription || "").split(/\s+/).filter(Boolean).length;
+
+      if (titleWordCount > 0 && titleWordCount < 3 && roleWordCount > 0 && roleWordCount < 30)  {
+        addSignal("vague_role", "Job title and role details are too vague.");
+      }
+
+      if (strongRedditMentions.length >= 2) {
+        addSignal(
+          "reddit_mentions",
+          `${strongRedditMentions.length} Reddit posts mention scam or hiring concerns related to this company.`,
+        );
+      }
+
+      if (scamKeywordCommentCount >= 2) {
+        addCustomSignal(
+          "reddit_comment_scam_score",
+          `${scamKeywordCommentCount} Reddit comments include scam-related warnings from the community.`,
+          10,
+          "high",
+        );
+      } else if (scamKeywordCommentCount >= 1) {
+        addCustomSignal(
+          "reddit_comment_scam_score",
+          `${scamKeywordCommentCount} Reddit comments include scam-related warning language.`,
+          5,
+          "medium",
+        );
+      }
+
+
+      // Free verification checks (domain age, disposable inbox, MX, MCA registry).
+      for (const signal of freeChecks.signals) {
+        addSignal(signal.key, signal.reason);
+      }
+
+      const riskScore = Math.min(
+        triggered.reduce((sum, s) => sum + s.weight, 0),
+        100,
+      );
+      return { triggered, riskScore, matchedCase, emailDomain, websiteDomain, cinValue, redditMentionsData };
+    };
+
+    // 2. Only when the free result is still unclear, spend an AI call on entity extraction,
+    //    then re-run the free checks if it surfaced anything new (lookups are cached).
+    let extractedEntities = fallbackEntities;
+    let freeChecks = initialFreeChecks;
+    let evaluation = evaluate(extractedEntities, freeChecks);
+
+    if (evaluation.riskScore < CLEAR_RESULT_SCORE) {
+      const aiEntities = await extractEntitiesWithGemini(input, fullSubmittedText);
+      if (JSON.stringify(aiEntities) !== JSON.stringify(fallbackEntities)) {
+        extractedEntities = aiEntities;
+        const before = JSON.stringify(freeCheckInputFor(fallbackEntities));
+        if (JSON.stringify(freeCheckInputFor(aiEntities)) !== before) {
+          freeChecks = await runFreeChecks(freeCheckInputFor(aiEntities));
+        }
+        evaluation = evaluate(extractedEntities, freeChecks);
       }
     }
 
-    if (containsAny(fullText, URGENCY_KEYWORDS)) {
-      addSignal("urgency_language", "Urgency phrases detected in offer text.");
-    }
-
-    if (!input.website && !input.linkedinUrl) {
-      addSignal("no_company_web_presence", "No website and no LinkedIn profile provided.");
-    }
-
-    const offerTextWordCount = fullText.trim().split(/\s+/).filter(Boolean).length;
-    if (offerTextWordCount > 50 && !containsAny(fullText, INTERVIEW_KEYWORDS)) {
-    addSignal("no_interview_mentioned", "No interview/test/assessment mentions in submitted text.");
-
-    }
-
-    if (/whatsapp/i.test(`${input.phone} ${fullText}`)) {
-      addSignal("whatsapp_only_recruitment", "WhatsApp appears to be primary/only recruitment channel.");
-    }
-
-    if (fullText && fullText.trim().split(/\s+/).filter(Boolean).length > 80) {
-      const checks = [
-        /(company address|address:)/i.test(fullText),
-        /(registration number|cin|incorporation no)/i.test(fullText),
-        /\b(date|dated)\b/i.test(fullText),
-        /(authorized signatory|authorised signatory|hr manager|signatory)/i.test(fullText),
-        /(letterhead|official letterhead|www\.)/i.test(fullText),
-      ];
-      const missingCount = checks.filter((ok) => !ok).length;
-      if (missingCount >= 3) {
-        addSignal("poor_formatting", "Offer text is missing multiple expected formal offer details.");
-      }
-    }
-
-    const titleWordCount = (input.jobTitle || "").split(/\s+/).filter(Boolean).length;
-    const roleWordCount = (input.roleDescription || "").split(/\s+/).filter(Boolean).length;
-
-    if (titleWordCount > 0 && titleWordCount < 3 && roleWordCount > 0 && roleWordCount < 30)  {
-      addSignal("vague_role", "Job title and role details are too vague.");
-    }
-
-    if (strongRedditMentions.length >= 2) {
-      addSignal(
-        "reddit_mentions",
-        `${strongRedditMentions.length} Reddit posts mention scam or hiring concerns related to this company.`,
-      );
-    }
-
-    if (scamKeywordCommentCount >= 2) {
-      addCustomSignal(
-        "reddit_comment_scam_score",
-        `${scamKeywordCommentCount} Reddit comments include scam-related warnings from the community.`,
-        10,
-        "high",
-      );
-    } else if (scamKeywordCommentCount >= 1) {
-      addCustomSignal(
-        "reddit_comment_scam_score",
-        `${scamKeywordCommentCount} Reddit comments include scam-related warning language.`,
-        5,
-        "medium",
-      );
-    }
-
-    const rawScore = triggered.reduce((sum, s) => sum + s.weight, 0);
-    const riskScore = Math.min(rawScore, 100);
+    const { triggered, riskScore, matchedCase, emailDomain, websiteDomain, cinValue, redditMentionsData } = evaluation;
     const verdict = verdictFromScore(riskScore);
     const confidence = confidenceFromFilledFields(input);
 
     const llmOutput = await callGroqForExplanations(triggered);
+    // Free-check findings carry concrete facts (registration date, registry status), so
+    // the report shows them as written instead of a generic AI paraphrase.
+    const signalExplanations: Record<string, string> = { ...llmOutput.signalExplanations };
+    for (const signal of triggered) {
+      if (FREE_CHECK_SIGNAL_KEYS.has(signal.key) && signal.reason) signalExplanations[signal.key] = signal.reason;
+    }
 
     const insertPayload = {
       inputs_json: input,
@@ -925,19 +772,32 @@ export async function POST(req: Request) {
       verdict: verdict,
       confidence: confidence,
       explanation_json: {
-        signalExplanations: llmOutput.signalExplanations,
+        signalExplanations,
         nextSteps: llmOutput.nextSteps,
       },
       reddit_mentions_json: redditMentionsData,
+      verification_checks_json: freeChecks.checks,
     };
 
-    const inserted = await supabaseRequest<{ id: string }[]>("cases?select=id", {
-      method: "POST",
-      headers: {
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify(insertPayload),
-    });
+    const insertCase = (payload: Record<string, unknown>) =>
+      supabaseRequest<{ id: string }[]>("cases?select=id", {
+        method: "POST",
+        headers: {
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify(payload),
+      });
+
+    let inserted: { id: string }[];
+    try {
+      inserted = await insertCase(insertPayload);
+    } catch (error) {
+      // Until the 20261124 migration adds the column, store the report without it
+      // rather than failing the whole analysis.
+      if (!(error instanceof Error) || !error.message.includes("verification_checks_json")) throw error;
+      const { verification_checks_json: _omitted, ...legacyPayload } = insertPayload;
+      inserted = await insertCase(legacyPayload);
+    }
 
     const id = inserted?.[0]?.id;
 
