@@ -33,9 +33,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Link href="/contact" className="hover:text-white">
                   Contact
                 </Link>
-                <Link href="/admin-offersafe" className="hover:text-white">
-                  Admin
-                </Link>
                 <Link
                   href="/analyze"
                   className="inline-flex items-center rounded"
@@ -67,9 +64,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </Link>
                 <Link href="/contact" className="hover:text-white">
                   Contact
-                </Link>
-                <Link href="/admin-offersafe" className="hover:text-white">
-                  Admin
                 </Link>
               </div>
             </div>
