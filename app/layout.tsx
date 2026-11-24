@@ -52,7 +52,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <p className="text-lg font-bold" style={{ color: "var(--navbar-text)" }}>
                   OfferSafe
                 </p>
-                <p className="text-sm">Helping students and job-seekers detect suspicious offers before they commit.</p>              </div>
+                <p className="text-sm">Helping students and job-seekers detect suspicious offers before they commit.</p>
+              </div>
               <div className="flex flex-col gap-2 text-sm sm:items-end">
                 <Link href="/scam-cases" className="hover:text-white">
                   Reports
