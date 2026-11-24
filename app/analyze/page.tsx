@@ -84,7 +84,7 @@ export default function AnalyzePage() {
             <label className="space-y-2">
               <span className="label">CIN</span>
               <input className="input" {...bind("cin")} />
-              <p className="text-xs" style={{ color: "var(--muted)" }}>Hint: 21-character MCA format</p>
+              <p className="text-xs" style={{ color: "var(--muted)" }}>21-character CIN (e.g. L22210MH1995PLC084781) or LLPIN (e.g. AAA-0008)</p>
             </label>
           </div>
         </section>
