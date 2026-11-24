@@ -1,3 +1,4 @@
+import { MISSING_SUPABASE_ENV, supabasePublicKey } from "@/lib/supabase-key";
 import { NextResponse } from "next/server";
 import { createHash } from "crypto";
 
@@ -79,9 +80,9 @@ function mergeUnique(existing: string[] | null, incoming: string[]): string[] {
 
 async function supabaseRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const anon = supabasePublicKey();
   if (!url || !anon) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    throw new Error(MISSING_SUPABASE_ENV);
   }
 
   const res = await fetch(`${url}/rest/v1/${path}`, {
@@ -105,7 +106,7 @@ async function supabaseRequest<T>(path: string, init?: RequestInit): Promise<T> 
 
 async function uploadProofFile(file: File, pathPrefix: string): Promise<string | null> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const anon = supabasePublicKey();
   if (!url || !anon) return null;
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const objectPath = `${pathPrefix}/${Date.now()}-${safeName}`;

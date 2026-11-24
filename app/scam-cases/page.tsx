@@ -1,4 +1,5 @@
 "use client";
+import { supabasePublicKey } from "@/lib/supabase-key";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -27,7 +28,7 @@ export default function ScamCasesPage() {
     async function load() {
       try {
         const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+        const anon = supabasePublicKey();
         if (!base || !anon) throw new Error("Missing Supabase env vars");
         const res = await fetch(`${base}/rest/v1/scam_cases?status=eq.approved&select=id,case_name,scam_type,severity,description`, {
           headers: {
