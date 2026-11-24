@@ -2,11 +2,15 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
+import HoneypotField from "@/components/honeypot-field";
+import { HONEYPOT_FIELD, STARTED_AT_FIELD } from "@/lib/spam-fields";
 
 export default function ContactPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
+  const [trap, setTrap] = useState("");
+  const [startedAt] = useState(() => Date.now());
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +24,7 @@ export default function ContactPage() {
       const res = await fetch("/api/contact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, message }),
+        body: JSON.stringify({ name, email, message, [HONEYPOT_FIELD]: trap, [STARTED_AT_FIELD]: startedAt }),
       });
       const data = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) throw new Error(data.error || "Failed to submit");
@@ -53,7 +57,8 @@ export default function ContactPage() {
           </p>
         </div>
 
-        <form onSubmit={onSubmit} className="form-section" aria-busy={submitting}>
+        <form onSubmit={onSubmit} className="form-section relative" aria-busy={submitting}>
+          <HoneypotField value={trap} onChange={setTrap} />
           <div className="field">
             <label className="label" htmlFor="c-name">
               Name
