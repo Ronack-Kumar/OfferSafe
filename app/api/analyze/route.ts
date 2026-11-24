@@ -2,8 +2,24 @@ import { MISSING_SUPABASE_ENV, supabasePublicKey } from "@/lib/supabase-key";
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import Groq from "groq-sdk";
-import { runFreeChecks, type FreeCheckOutput, type FreeCheckSignalKey } from "@/lib/checks";
-import { findCinInText, isValidCinFormat, normalizeCin } from "@/lib/checks/mca";
+import { runFreeChecks, type FreeCheckOutput } from "@/lib/checks";
+import { findCinInText, isValidCinFormat } from "@/lib/checks/mca";
+import { explain, says } from "@/lib/scoring/explanations";
+import {
+  detectAny,
+  detectNoInterview,
+  detectPattern,
+  detectPaymentRequest,
+  detectUrgency,
+  INTERVIEW_WORDS,
+  PAID_TRAINING_PATTERNS,
+  PURCHASE_PATTERN,
+  REGISTERED_CLAIM,
+  REIMBURSEMENT_PATTERNS,
+  WHATSAPP_PATTERN,
+} from "@/lib/scoring/text-signals";
+import { emailDomainStanding } from "@/lib/scoring/web-presence";
+import { DEFAULT_NEXT_STEPS, nextStepsPrompt, parseNextSteps } from "@/lib/scoring/next-steps";
 
 type SignalSeverity = "critical" | "high" | "medium" | "low";
 
@@ -109,16 +125,6 @@ const SIGNALS: Record<SignalKey, { weight: number; severity: SignalSeverity }> =
   company_not_active: { weight: 20, severity: "high" },
 };
 
-/** Free-check signals whose report text comes from the check itself (it carries dates). */
-const FREE_CHECK_SIGNAL_KEYS: ReadonlySet<SignalKey> = new Set<FreeCheckSignalKey>([
-  "domain_age_new",
-  "email_disposable",
-  "email_no_mx",
-  "cin_invalid_format",
-  "cin_not_found",
-  "company_not_active",
-]);
-
 /** At or above this score the verdict is already clear, so AI extraction is skipped. */
 const CLEAR_RESULT_SCORE = 66;
 
@@ -164,31 +170,6 @@ const PAYMENT_KEYWORDS = [
   "security deposit",
   "registration fee",
   "training fee",
-];
-
-const URGENCY_KEYWORDS = [
-  "urgent",
-  "last date",
-  "limited seats",
-  "act now",
-  "immediately",
-  "offer expires",
-  "today only",
-];
-
-const INTERVIEW_KEYWORDS = [
-  "interview",
-  "test",
-  "assessment",
-  "shortlisting",
-  "selection",
-];
-
-const PAID_TRAINING_KEYWORDS = [
-  "guaranteed placement",
-  "pay for training",
-  "certification fee before joining",
-  "placement after course",
 ];
 
 function toText(value: unknown): string {
@@ -355,45 +336,6 @@ function verdictFromScore(score: number): "LOW RISK" | "CAUTION" | "SUSPICIOUS" 
   return "HIGH-RISK SCAM";
 }
 
-function parseGroqJson(raw: string): {
-  signalExplanations: Record<string, string>;
-  nextSteps: string[];
-} {
-  const fallback = {
-    signalExplanations: {} as Record<string, string>,
-    nextSteps: [
-      "Verify the company domain and recruiter contact on official sources.",
-      "Do not pay any fee, deposit, or purchase amount before a verified offer.",
-      "Request a formal interview process and official offer documents.",
-    ],
-  };
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      return {
-        signalExplanations:
-          parsed.signalExplanations && typeof parsed.signalExplanations === "object"
-            ? parsed.signalExplanations
-            : fallback.signalExplanations,
-        nextSteps: Array.isArray(parsed.nextSteps)
-          ? parsed.nextSteps.map((x: unknown) => String(x)).slice(0, 5)
-          : fallback.nextSteps,
-      };
-    }
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return parseGroqJson(match[0]);
-      } catch {
-        return fallback;
-      }
-    }
-  }
-  return fallback;
-}
-
 function commentHasScamKeyword(body: string): boolean {
   return containsAny(body, REDDIT_COMMENT_KEYWORDS);
 }
@@ -426,27 +368,17 @@ async function supabaseRequest<T>(path: string, init?: RequestInit): Promise<T> 
   return (await res.json()) as T;
 }
 
-async function callGroqForExplanations(
-  triggeredSignals: TriggeredSignal[],
-): Promise<{ signalExplanations: Record<string, string>; nextSteps: string[] }> {
+/**
+ * The AI only writes the "what to check next" list (see lib/scoring/next-steps.ts).
+ * Red-flag explanations are built deterministically from the user's text (addSignal).
+ */
+async function callGroqForNextSteps(triggeredSignals: TriggeredSignal[]): Promise<string[]> {
   const apiKey = process.env.GROQ_API_KEY;
-
-  if (!apiKey || triggeredSignals.length === 0) {
-    return {
-      signalExplanations: Object.fromEntries(
-        triggeredSignals.map((s) => [s.key, `${s.key.replace(/_/g, " ")} was triggered based on the submitted details.`]),
-      ),
-      nextSteps: [
-        "Cross-check the recruiter identity using official company channels.",
-        "Avoid making any payment before independent verification.",
-        "Keep records of all communication and offer documents.",
-      ],
-    };
-  }
+  if (!apiKey || triggeredSignals.length === 0) return DEFAULT_NEXT_STEPS;
 
   try {
-    const signalList = triggeredSignals.map((s) => `${s.key} (${s.severity})`).join(", ");
-    const prompt = `You are a fraud risk analyst. Given these triggered scam signals for a job/internship offer in India: ${signalList}. Generate a 1-2 sentence plain-English explanation for each signal describing what it means in the context of a job scam. Then generate a 3-5 item checklist of what the user should verify next. Do not make legal claims. Do not say whether the company is definitely real or fake. Be direct and practical. Return JSON: { signalExplanations: { signalKey: explanation }, nextSteps: [string] }`;
+    // Only fixed signal names go to the model, never the (untrusted) offer text.
+    const prompt = nextStepsPrompt(triggeredSignals.map((s) => s.key));
 
     const groq = new Groq({ apiKey });
     const completion = await groq.chat.completions.create({
@@ -455,20 +387,9 @@ async function callGroqForExplanations(
       response_format: { type: "json_object" },
       messages: [{ role: "user", content: prompt }],
     });
-
-    const content = completion.choices[0]?.message?.content ?? "";
-    return parseGroqJson(content);
+    return parseNextSteps(completion.choices[0]?.message?.content ?? "");
   } catch {
-    return {
-      signalExplanations: Object.fromEntries(
-        triggeredSignals.map((s) => [s.key, `${s.key.replace(/_/g, " ")} was triggered based on the submitted details.`]),
-      ),
-      nextSteps: [
-        "Verify the company website and recruiter email from official listings.",
-        "Do not transfer money, buy kits, or pay fees for hiring.",
-        "Ask for a formal interview process and official onboarding workflow.",
-      ],
-    };
+    return DEFAULT_NEXT_STEPS;
   }
 }
 
@@ -530,19 +451,20 @@ export async function POST(req: Request) {
       const websiteDomain = extractedEntities.websiteDomain || extractDomain(input.website || "");
 
       let matchedCase: ScamCase | null = null;
+      let matchedOn = "";
       const companyInput = lower(extractedEntities.companyName || input.companyName || "");
 
       for (const c of scamCases) {
-        const companyHit = (c.company_name_variants || []).some((v) => {
+        const companyHit = (c.company_name_variants || []).find((v) => {
           const vv = lower(v || "");
           return vv.length > 0 && companyInput.length > 0 && (companyInput.includes(vv) || vv.includes(companyInput));
         });
 
-        const emailHit = (c.email_patterns || []).some(
+        const emailHit = (c.email_patterns || []).find(
           (p) => p && input.recruiterEmail && lower(input.recruiterEmail).includes(lower(p)),
         );
 
-        const domainHit = (c.domain_patterns || []).some((p) => {
+        const domainHit = (c.domain_patterns || []).find((p) => {
           if (!p || !websiteDomain) return false;
           const candidate = lower(p);
           return websiteDomain === candidate || websiteDomain.endsWith(`.${candidate}`);
@@ -550,10 +472,14 @@ export async function POST(req: Request) {
 
         if (companyHit || emailHit || domainHit) {
           matchedCase = c;
+          matchedOn = companyHit
+            ? `The company name “${extractedEntities.companyName || input.companyName}”`
+            : emailHit
+              ? `The recruiter email “${input.recruiterEmail}”`
+              : `The website “${websiteDomain}”`;
           break;
         }
       }
-
 
       // Reddit (OAuth, optional): only posts/comments that are clear scam reports are kept.
       const redditMentionsData = freeChecks.reddit;
@@ -564,79 +490,88 @@ export async function POST(req: Request) {
 
       const triggered: TriggeredSignal[] = [];
 
-      const addSignal = (key: SignalKey, reason: string) => {
+      // `reason` is the user-facing explanation: what we found (quoting the user's own
+      // words where there are any), then why it matters.
+      const addSignal = (key: SignalKey, finding: string) => {
         const exists = triggered.some((s) => s.key === key);
         if (!exists) {
           triggered.push({
             key,
             weight: SIGNALS[key].weight,
             severity: SIGNALS[key].severity,
-            reason,
+            reason: explain(key, finding),
           });
         }
       };
 
-      const addCustomSignal = (key: SignalKey, reason: string, weight: number, severity: SignalSeverity) => {
+      const addCustomSignal = (key: SignalKey, finding: string, weight: number, severity: SignalSeverity) => {
         const exists = triggered.some((s) => s.key === key);
         if (!exists) {
-          triggered.push({
-            key,
-            weight,
-            severity,
-            reason,
-          });
+          triggered.push({ key, weight, severity, reason: explain(key, finding) });
         }
       };
 
       if (matchedCase) {
-        addSignal("known_scam_match", `Matched known scam case: ${matchedCase.case_name}`);
+        addSignal("known_scam_match", `${matchedOn} matches a reported scam in our database: “${matchedCase.case_name}”.`);
       }
 
+      const email = lower(input.recruiterEmail || "") || (emailDomain ? `@${emailDomain}` : "");
+
       if (emailDomain && FREE_EMAIL_DOMAINS.has(emailDomain)) {
-        addSignal("email_free_provider", `Recruiter email uses free provider (${emailDomain}).`);
+        addSignal("email_free_provider", `The recruiter writes from “${email}”, a free ${emailDomain} address.`);
       }
 
       if (emailDomain && websiteDomain && emailDomain !== websiteDomain && !emailDomain.endsWith(`.${websiteDomain}`)) {
-        addSignal("email_domain_mismatch", "Recruiter email domain does not match submitted website domain.");
+        addSignal(
+          "email_domain_mismatch",
+          `The recruiter's email is at “${emailDomain}” but the company website you gave is “${websiteDomain}”.`,
+        );
       }
 
       const cinValue = extractedEntities.cin || input.cin || findCinInText(fullText) || "";
 
       if (cinValue) {
         if (!isValidCinFormat(cinValue)) {
-          addSignal("cin_invalid_format", "CIN provided but format is invalid.");
+          addSignal("cin_invalid_format", `The CIN you gave, “${cinValue}”, isn't in a valid format.`);
         }
       } else {
-        addSignal("cin_missing", "No CIN provided.");
+        addSignal("cin_missing", "No CIN (company registration number) was given or found in the offer text.");
       }
 
-      const registeredClaim =
-        Boolean(cinValue) || /(registered|pvt ltd|private limited|llp|inc)/i.test(`${input.companyName} ${fullText}`);
+      const registeredHit = detectPattern(`${input.companyName || ""}\n${fullText}`, REGISTERED_CLAIM);
+      const registeredClaim = Boolean(cinValue) || Boolean(registeredHit);
 
       if (registeredClaim && emailDomain && (emailDomain === "gmail.com" || emailDomain === "yahoo.com")) {
-        addSignal("gmail_as_official", "Registered company claim with gmail/yahoo official contact.");
+        const claim = registeredHit ? `calls the company “${registeredHit.quote}”` : `gives the CIN “${cinValue}”`;
+        addSignal("gmail_as_official", `The offer ${claim}, but the official contact is “${email}”.`);
       }
 
-      if (containsAny(fullText, PAYMENT_KEYWORDS)) {
-        addSignal("payment_requested", "Payment/fee/deposit language found in submitted text.");
+      const paymentHit = detectPaymentRequest(fullText);
+      if (paymentHit) {
+        addSignal("payment_requested", `${says(paymentHit)} That is a request for money from you.`);
       }
 
-      const reimbursementTrap =
-        /(reimburse after joining|will be reimbursed)/i.test(fullText) && /(purchase|buy)/i.test(fullText);
-
-      if (reimbursementTrap) {
-        addSignal("reimbursement_trap", "Contains reimbursement-after-joining plus purchase/buy language.");
+      const reimbursementHit = detectAny(fullText, REIMBURSEMENT_PATTERNS);
+      if (reimbursementHit && PURCHASE_PATTERN.test(fullText)) {
+        addSignal("reimbursement_trap", says(reimbursementHit));
       }
 
-      if (containsAny(fullText, PAID_TRAINING_KEYWORDS)) {
-        addSignal("paid_training_placement", "Contains paid training/guaranteed placement language.");
+      const paidTrainingHit = detectAny(fullText, PAID_TRAINING_PATTERNS);
+      if (paidTrainingHit) {
+        addSignal("paid_training_placement", says(paidTrainingHit));
       }
 
-      if (!websiteDomain) {
-        addSignal("domain_missing", "No website URL provided.");
+      // A non-free recruiter domain that is over 2 years old and receives mail counts
+      // as the company's web presence, so a missing website isn't held against it.
+      const emailStanding = emailDomainStanding(emailDomain, freeChecks.checks);
+      const standingNote =
+        !emailStanding.established && emailStanding.domain
+          ? ` The recruiter's email domain doesn't count as one because ${emailStanding.why}.`
+          : "";
+
+      if (!websiteDomain && !emailStanding.established) {
+        addSignal("domain_missing", `No company website was given.${standingNote}`);
       }
-      // domain_age_new removed — it fired for every site and inflated all scores
-    
 
       const stipend = extractedEntities.stipendAmount;
       const isInternship = /(intern|internship)/i.test(`${input.jobTitle} ${fullText}`);
@@ -644,74 +579,94 @@ export async function POST(req: Request) {
 
       if (stipend !== null) {
         if ((isInternship && stipend > 80000) || (isFresher && stipend > 200000)) {
-          addSignal("unrealistic_stipend", "Stipend appears unrealistically high for role category.");
+          const amountHit = detectAny(fullText, [/(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d+)?/i, /[\d,]+(?:\.\d+)?\s*(?:rs\.?|inr|₹)/i]);
+          const amount = amountHit ? says(amountHit) : `The offer pays ₹${stipend.toLocaleString("en-IN")}.`;
+          addSignal(
+            "unrealistic_stipend",
+            `${amount} That is far above the usual pay for ${isInternship ? "an internship" : "a fresher role"}.`,
+          );
         }
       }
 
-      if (containsAny(fullText, URGENCY_KEYWORDS)) {
-        addSignal("urgency_language", "Urgency phrases detected in offer text.");
+      const urgencyHit = detectUrgency(fullText);
+      if (urgencyHit) {
+        addSignal("urgency_language", `${says(urgencyHit)} That pressures you to act fast.`);
       }
 
-      if (!input.website && !input.linkedinUrl) {
-        addSignal("no_company_web_presence", "No website and no LinkedIn profile provided.");
+      if (!input.website && !input.linkedinUrl && !emailStanding.established) {
+        addSignal("no_company_web_presence", `Neither a company website nor a LinkedIn page was provided.${standingNote}`);
       }
 
+      // Saying outright that there is no interview is a strong signal; merely not
+      // mentioning one is a weak one.
+      const noInterviewHit = detectNoInterview(fullText);
       const offerTextWordCount = fullText.trim().split(/\s+/).filter(Boolean).length;
-      if (offerTextWordCount > 50 && !containsAny(fullText, INTERVIEW_KEYWORDS)) {
-      addSignal("no_interview_mentioned", "No interview/test/assessment mentions in submitted text.");
-
+      if (noInterviewHit) {
+        addCustomSignal(
+          "no_interview_mentioned",
+          `${says(noInterviewHit)} You are being hired without any selection process.`,
+          20,
+          "high",
+        );
+      } else if (offerTextWordCount > 50 && !INTERVIEW_WORDS.test(fullText)) {
+        addSignal("no_interview_mentioned", `The offer text (${offerTextWordCount} words) never mentions an interview, test or assessment.`);
       }
 
-      if (/whatsapp/i.test(`${input.phone} ${fullText}`)) {
-        addSignal("whatsapp_only_recruitment", "WhatsApp appears to be primary/only recruitment channel.");
+      const whatsappHit = detectPattern(`${input.phone || ""}\n${fullText}`, WHATSAPP_PATTERN);
+      if (whatsappHit) {
+        addSignal("whatsapp_only_recruitment", says(whatsappHit));
       }
 
-      if (fullText && fullText.trim().split(/\s+/).filter(Boolean).length > 80) {
-        const checks = [
-          /(company address|address:)/i.test(fullText),
-          /(registration number|cin|incorporation no)/i.test(fullText),
-          /\b(date|dated)\b/i.test(fullText),
-          /(authorized signatory|authorised signatory|hr manager|signatory)/i.test(fullText),
-          /(letterhead|official letterhead|www\.)/i.test(fullText),
+      if (fullText && offerTextWordCount > 80) {
+        const parts: Array<[boolean, string]> = [
+          [
+            /(company address|address:)/i.test(fullText) ||
+              // A street-style address with an Indian PIN code, e.g. "Hosur Road, Bengaluru 560100".
+              /\b(?:road|rd\.?|street|st\.?|nagar|marg|lane|sector|phase|floor|building|tower|park|city|layout)\b[^.\n]{0,60}\b[1-9]\d{5}\b/i.test(fullText),
+            "company address",
+          ],
+          [Boolean(cinValue) || /(registration number|\bcin\b|incorporation no)/i.test(fullText), "registration number (CIN)"],
+          [/\b(date|dated)\b/i.test(fullText), "date"],
+          [/(authorized signatory|authorised signatory|hr manager|signatory)/i.test(fullText), "authorised signatory"],
+          [/(letterhead|official letterhead|www\.)/i.test(fullText), "letterhead"],
         ];
-        const missingCount = checks.filter((ok) => !ok).length;
-        if (missingCount >= 3) {
-          addSignal("poor_formatting", "Offer text is missing multiple expected formal offer details.");
+        const missing = parts.filter(([ok]) => !ok).map(([, label]) => label);
+        if (missing.length >= 3) {
+          const list = `${missing.slice(0, -1).join(", ")} or ${missing[missing.length - 1]}`;
+          addSignal("poor_formatting", `We couldn't find a ${list} in the offer text.`);
         }
       }
 
       const titleWordCount = (input.jobTitle || "").split(/\s+/).filter(Boolean).length;
       const roleWordCount = (input.roleDescription || "").split(/\s+/).filter(Boolean).length;
 
-      if (titleWordCount > 0 && titleWordCount < 3 && roleWordCount > 0 && roleWordCount < 30)  {
-        addSignal("vague_role", "Job title and role details are too vague.");
+      if (titleWordCount > 0 && titleWordCount < 3 && roleWordCount > 0 && roleWordCount < 30) {
+        addSignal(
+          "vague_role",
+          `The job title is just “${input.jobTitle}” and the role description is only ${roleWordCount} word${roleWordCount === 1 ? "" : "s"} long.`,
+        );
       }
 
       if (strongRedditMentions.length >= 2) {
         addSignal(
           "reddit_mentions",
-          `${strongRedditMentions.length} Reddit posts mention scam or hiring concerns related to this company.`,
+          `${strongRedditMentions.length} Reddit posts report this company or email as a scam, for example “${strongRedditMentions[0].title}”.`,
         );
       }
 
       if (scamKeywordCommentCount >= 2) {
         addCustomSignal(
           "reddit_comment_scam_score",
-          `${scamKeywordCommentCount} Reddit comments include scam-related warnings from the community.`,
+          `${scamKeywordCommentCount} Reddit comments about this company contain scam warnings.`,
           10,
           "high",
         );
       } else if (scamKeywordCommentCount >= 1) {
-        addCustomSignal(
-          "reddit_comment_scam_score",
-          `${scamKeywordCommentCount} Reddit comments include scam-related warning language.`,
-          5,
-          "medium",
-        );
+        addCustomSignal("reddit_comment_scam_score", "A Reddit comment about this company contains a scam warning.", 5, "medium");
       }
 
-
-      // Free verification checks (domain age, disposable inbox, MX, MCA registry).
+      // Free verification checks (domain age, disposable inbox, MX, MCA registry). Their
+      // text already names the exact domain, date or CIN.
       for (const signal of freeChecks.signals) {
         addSignal(signal.key, signal.reason);
       }
@@ -745,13 +700,10 @@ export async function POST(req: Request) {
     const verdict = verdictFromScore(riskScore);
     const confidence = confidenceFromFilledFields(input);
 
-    const llmOutput = await callGroqForExplanations(triggered);
-    // Free-check findings carry concrete facts (registration date, registry status), so
-    // the report shows them as written instead of a generic AI paraphrase.
-    const signalExplanations: Record<string, string> = { ...llmOutput.signalExplanations };
-    for (const signal of triggered) {
-      if (FREE_CHECK_SIGNAL_KEYS.has(signal.key) && signal.reason) signalExplanations[signal.key] = signal.reason;
-    }
+    const nextSteps = await callGroqForNextSteps(triggered);
+    // Every explanation is built from the user's own text (see addSignal); the AI only
+    // writes the next-steps checklist.
+    const signalExplanations: Record<string, string> = Object.fromEntries(triggered.map((s) => [s.key, s.reason]));
 
     const insertPayload = {
       inputs_json: input,
@@ -773,7 +725,7 @@ export async function POST(req: Request) {
       confidence: confidence,
       explanation_json: {
         signalExplanations,
-        nextSteps: llmOutput.nextSteps,
+        nextSteps,
       },
       reddit_mentions_json: redditMentionsData,
       verification_checks_json: freeChecks.checks,
