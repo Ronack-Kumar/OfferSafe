@@ -19,6 +19,7 @@ import {
   WHATSAPP_PATTERN,
 } from "@/lib/scoring/text-signals";
 import { emailDomainStanding } from "@/lib/scoring/web-presence";
+import { DEFAULT_NEXT_STEPS, nextStepsPrompt, parseNextSteps } from "@/lib/scoring/next-steps";
 
 type SignalSeverity = "critical" | "high" | "medium" | "low";
 
@@ -335,26 +336,6 @@ function verdictFromScore(score: number): "LOW RISK" | "CAUTION" | "SUSPICIOUS" 
   return "HIGH-RISK SCAM";
 }
 
-const DEFAULT_NEXT_STEPS = [
-  "Find the company's official website yourself and confirm the job is listed on its careers page.",
-  "Don't pay any fee, deposit or purchase amount to get or keep a job offer.",
-  "Ask for a formal interview and an offer letter from the company's own email domain.",
-];
-
-function parseNextSteps(raw: string): string[] {
-  for (const candidate of [raw, raw.match(/\{[\s\S]*\}/)?.[0] ?? ""]) {
-    try {
-      const parsed = JSON.parse(candidate) as { nextSteps?: unknown };
-      if (Array.isArray(parsed.nextSteps) && parsed.nextSteps.length > 0) {
-        return parsed.nextSteps.map((x) => String(x)).slice(0, 5);
-      }
-    } catch {
-      // try the next candidate
-    }
-  }
-  return DEFAULT_NEXT_STEPS;
-}
-
 function commentHasScamKeyword(body: string): boolean {
   return containsAny(body, REDDIT_COMMENT_KEYWORDS);
 }
@@ -388,16 +369,16 @@ async function supabaseRequest<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 /**
- * The AI only writes the "what to check next" list. Red-flag explanations are built
- * deterministically from the user's own text (see addSignal in POST).
+ * The AI only writes the "what to check next" list (see lib/scoring/next-steps.ts).
+ * Red-flag explanations are built deterministically from the user's text (addSignal).
  */
 async function callGroqForNextSteps(triggeredSignals: TriggeredSignal[]): Promise<string[]> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey || triggeredSignals.length === 0) return DEFAULT_NEXT_STEPS;
 
   try {
-    const findings = triggeredSignals.map((s) => `- ${s.reason}`).join("\n");
-    const prompt = `You help job seekers in India check whether a job or internship offer is a scam. These red flags were found in an offer:\n${findings}\n\nWrite a 3-5 item checklist of specific things the person should verify or do next, based on these findings. Plain language, one sentence each. No legal claims, and don't say the company is definitely real or fake. Return JSON: { "nextSteps": [string] }`;
+    // Only fixed signal names go to the model, never the (untrusted) offer text.
+    const prompt = nextStepsPrompt(triggeredSignals.map((s) => s.key));
 
     const groq = new Groq({ apiKey });
     const completion = await groq.chat.completions.create({
