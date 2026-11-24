@@ -300,7 +300,7 @@ async function extractEntitiesWithGemini(input: AnalyzePayload, fullSubmittedTex
     const prompt =
       'Extract the following entities from this job/internship offer text. Return ONLY valid JSON with these keys: companyName, recruiterName, emailDomain, phone, websiteDomain, cin, dates, stipendAmount, paymentDemands. If a field is not found return null.';
     const client = new GoogleGenerativeAI(apiKey);
-    const model = client.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = client.getGenerativeModel({ model: "gemini-2.5-flash" });
     const result = await model.generateContent(`${prompt}\n\n${fullSubmittedText}`);
     const text = result.response.text();
     const parsed = parseJsonObject(text);
@@ -364,8 +364,9 @@ async function supabaseRequest<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(`Supabase request failed (${res.status}): ${message}`);
   }
 
-  if (res.status === 204) return null as T;
-  return (await res.json()) as T;
+  // Inserts with Prefer: return=minimal answer 201 with an empty body.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : null) as T;
 }
 
 /**
@@ -382,7 +383,7 @@ async function callGroqForNextSteps(triggeredSignals: TriggeredSignal[]): Promis
 
     const groq = new Groq({ apiKey });
     const completion = await groq.chat.completions.create({
-      model: "llama3-8b-8192",
+      model: "openai/gpt-oss-20b",
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [{ role: "user", content: prompt }],
@@ -731,30 +732,26 @@ export async function POST(req: Request) {
       verification_checks_json: freeChecks.checks,
     };
 
+    // The id is generated here and the insert doesn't read the row back, so the public
+    // key never needs SELECT on cases (reports are read one at a time via get_case()).
+    const id = crypto.randomUUID();
     const insertCase = (payload: Record<string, unknown>) =>
-      supabaseRequest<{ id: string }[]>("cases?select=id", {
+      supabaseRequest<null>("cases", {
         method: "POST",
         headers: {
-          Prefer: "return=representation",
+          Prefer: "return=minimal",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ id, ...payload }),
       });
 
-    let inserted: { id: string }[];
     try {
-      inserted = await insertCase(insertPayload);
+      await insertCase(insertPayload);
     } catch (error) {
       // Until the 20261124 migration adds the column, store the report without it
       // rather than failing the whole analysis.
       if (!(error instanceof Error) || !error.message.includes("verification_checks_json")) throw error;
       const { verification_checks_json: _omitted, ...legacyPayload } = insertPayload;
-      inserted = await insertCase(legacyPayload);
-    }
-
-    const id = inserted?.[0]?.id;
-
-    if (!id) {
-      throw new Error("Failed to persist case id.");
+      await insertCase(legacyPayload);
     }
 
     return NextResponse.json({ id }, { status: 200 });
