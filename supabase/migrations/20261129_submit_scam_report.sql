@@ -5,6 +5,11 @@
 -- it referenced columns that don't exist). Submissions now go through
 -- submit_scam_report(), which can only add one report and returns only its own id,
 -- count and status. Reports are never published automatically; an admin approves them.
+--
+-- The function is callable with the public key, so its inputs (reporter fingerprint,
+-- signals) are hints for the admin queue, not trusted facts: a caller can inflate a
+-- report's corroboration count or signals, but that only changes its triage label
+-- (pending_review vs low_confidence). Publishing always needs an admin.
 
 -- 1. Columns the form collects that the table was missing.
 ALTER TABLE public.pending_reports ADD COLUMN IF NOT EXISTS recruiter_name text;
@@ -41,7 +46,7 @@ BEGIN
     RAISE EXCEPTION 'at most 5 proof files' USING ERRCODE = '22023';
   END IF;
   FOR proof IN SELECT jsonb_array_elements_text(proofs) LOOP
-    IF proof !~ '^reports/[0-9a-f]{16}/[A-Za-z0-9._-]{1,120}$' THEN
+    IF proof !~ '^reports/[0-9a-f]{16}/[A-Za-z0-9_-]{1,100}\.(pdf|jpg|png)$' THEN
       RAISE EXCEPTION 'invalid proof path' USING ERRCODE = '22023';
     END IF;
   END LOOP;
@@ -105,14 +110,19 @@ DROP POLICY IF EXISTS "pending_reports public update" ON public.pending_reports;
 REVOKE INSERT, UPDATE ON public.pending_reports FROM anon;
 REVOKE INSERT ON public.pending_reports FROM authenticated;
 
--- 4. Proof files: private bucket. Anyone may upload a new file under reports/ (no
---    overwrite, no listing, no reading); only admins can read them.
-UPDATE storage.buckets SET public = false WHERE id = 'report-proofs';
+-- 4. Proof files: private bucket limited to PDF/JPG/PNG up to 5 MB. Anyone may upload a
+--    new .pdf/.jpg/.png file under reports/<random>/ (no overwrite, no listing, no
+--    reading); only admins can read them.
+UPDATE storage.buckets
+SET public = false,
+    file_size_limit = 5242880,
+    allowed_mime_types = ARRAY['application/pdf', 'image/jpeg', 'image/png']
+WHERE id = 'report-proofs';
 DROP POLICY IF EXISTS "report proofs upload" ON storage.objects;
 DROP POLICY IF EXISTS "report proofs admin read" ON storage.objects;
 CREATE POLICY "report proofs upload" ON storage.objects
   FOR INSERT TO anon, authenticated
-  WITH CHECK (bucket_id = 'report-proofs' AND name ~ '^reports/[0-9a-f]{16}/[A-Za-z0-9._-]{1,120}$');
+  WITH CHECK (bucket_id = 'report-proofs' AND name ~ '^reports/[0-9a-f]{16}/[A-Za-z0-9_-]{1,100}\.(pdf|jpg|png)$');
 CREATE POLICY "report proofs admin read" ON storage.objects
   FOR SELECT TO authenticated
   USING (bucket_id = 'report-proofs' AND public.is_offersafe_admin());

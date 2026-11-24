@@ -71,33 +71,6 @@ async function saveReport(fields: ReportFields, signals: string[], proofPaths: s
   return rows[0];
 }
 
-/** Best-effort receipt to the reporter. Sent from here only; there is no public email endpoint. */
-async function sendReceipt(to: string, reportId: string): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey || !to) return;
-  const text = [
-    "Thank you for reporting a suspected job scam to OfferSafe.",
-    "",
-    `Report reference: ${reportId}`,
-    "",
-    "A moderator will review it. If it's confirmed, it's added to our list of known scams to warn other job seekers.",
-    "We don't publish your name or email.",
-    "",
-    "Team OfferSafe",
-  ].join("\n");
-  try {
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ from: "OfferSafe <onboarding@resend.dev>", to: [to], subject: "We received your scam report", text }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(8000),
-    });
-  } catch {
-    // A missing receipt shouldn't fail the submission.
-  }
-}
-
 export async function POST(req: Request) {
   let form: FormData;
   try {
@@ -119,7 +92,6 @@ export async function POST(req: Request) {
     const proofPaths = uploaded.filter((p): p is string => p !== null);
 
     const saved = await saveReport(fields, signals, proofPaths, reporterFingerprint(req.headers));
-    await sendReceipt(fields.reporter_email, saved.id);
 
     return NextResponse.json({
       id: saved.id,

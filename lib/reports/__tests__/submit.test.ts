@@ -66,7 +66,7 @@ describe("POST /api/report-scam", () => {
   beforeEach(() => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", SUPABASE);
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_test");
-    vi.stubEnv("RESEND_API_KEY", "");
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
   });
 
   const request = (fd: FormData) => new Request("http://localhost:3000/api/report-scam", { method: "POST", body: fd });
@@ -85,6 +85,7 @@ describe("POST /api/report-scam", () => {
             recruiter_email: "hr@gmail.com",
             website_url: "http://169.254.169.254/latest/meta-data",
             payment_text: "Pay Rs 1,999 registration fee within 24 hours",
+            reporter_email: "victim@example.com",
           },
           [pdf()],
         ),
@@ -95,6 +96,8 @@ describe("POST /api/report-scam", () => {
 
     const urls = mock.mock.calls.map(([u]) => String(u));
     expect(urls.some((u) => u.includes("169.254.169.254"))).toBe(false);
+    // No email goes out: otherwise anyone could make the site email any address.
+    expect(urls.some((u) => u.includes("resend.com"))).toBe(false);
     expect(urls.some((u) => u.includes("/rest/v1/pending_reports") || u.includes("/rest/v1/scam_cases"))).toBe(false);
 
     const rpc = mock.mock.calls.find(([u]) => String(u).endsWith("/rpc/submit_scam_report"));
