@@ -69,98 +69,166 @@ export default function AnalyzePage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
-      <h1 className="text-3xl">Analyze an offer</h1>
-      <p style={{ color: "var(--muted)" }}>All fields are optional. Add whatever evidence you have.</p>
+    <div className="wrap pb-8 pt-6">
+      <div className="form-layout">
+        <div className="form-intro">
+          <p className="eyebrow mb-3">Check an offer</p>
+          <h1 className="page-title mb-4">Paste what they sent you.</h1>
+          <p className="lede mb-8">
+            Every field is optional. The more you add, the more checks we can run. Nothing here is shared with the recruiter.
+          </p>
+          <ul className="intro-list">
+            <li>
+              <b>The offer or message text</b> lets us quote the exact words that look wrong.
+            </li>
+            <li>
+              <b>The recruiter&apos;s email</b> is checked for free and throwaway domains, mail servers and domain age.
+            </li>
+            <li>
+              <b>The CIN</b> is looked up in a snapshot of the government&apos;s MCA company registry.
+            </li>
+          </ul>
+        </div>
 
-      <form onSubmit={onSubmit} className="space-y-6">
-        <section className="card space-y-4">
-          <p className="label">Company Details</p>
-          <div className="grid gap-4">
-            <label className="space-y-2">
-              <span className="label">Company name</span>
-              <input className="input" {...bind("companyName")} />
-            </label>
-            <label className="space-y-2">
-              <span className="label">CIN</span>
-              <input className="input" {...bind("cin")} />
-              <p className="text-xs" style={{ color: "var(--muted)" }}>21-character CIN (e.g. L22210MH1995PLC084781) or LLPIN (e.g. AAA-0008)</p>
-            </label>
+        <form onSubmit={onSubmit} className="space-y-5" aria-busy={submitting}>
+          <fieldset className="form-section">
+            <legend>
+              <span className="step-num" aria-hidden="true">
+                1
+              </span>
+              The offer
+            </legend>
+            <div className="field">
+              <label className="label" htmlFor="f-offer">
+                Offer or email text
+              </label>
+              <textarea id="f-offer" className="textarea h-40" {...bind("offerText")} placeholder="Paste the full message or offer letter" />
+            </div>
+            <div className="field">
+              <label className="label" htmlFor="f-payment">
+                Payment request, if any
+              </label>
+              <textarea id="f-payment" className="textarea h-28" {...bind("paymentText")} placeholder="e.g. Pay ₹2,499 for your training kit via UPI" />
+            </div>
+            <div className="field">
+              <label className="label" htmlFor="f-extracted">
+                Text from an offer letter PDF or image
+              </label>
+              <textarea id="f-extracted" className="textarea h-32" {...bind("extractedText")} />
+            </div>
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>
+              <span className="step-num" aria-hidden="true">
+                2
+              </span>
+              The company
+            </legend>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="field">
+                <label className="label" htmlFor="f-company">
+                  Company name
+                </label>
+                <input id="f-company" className="input" {...bind("companyName")} autoComplete="off" />
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="f-cin">
+                  CIN
+                </label>
+                <input id="f-cin" className="input" {...bind("cin")} aria-describedby="f-cin-hint" autoComplete="off" spellCheck={false} />
+                <p id="f-cin-hint" className="hint">
+                  21-character CIN (e.g. L22210MH1995PLC084781) or LLPIN (e.g. AAA-0008)
+                </p>
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="f-website">
+                  Company website
+                </label>
+                <input id="f-website" className="input" {...bind("website")} inputMode="url" autoComplete="off" placeholder="example.com" />
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="f-linkedin">
+                  LinkedIn page
+                </label>
+                <input id="f-linkedin" className="input" {...bind("linkedinUrl")} inputMode="url" autoComplete="off" />
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>
+              <span className="step-num" aria-hidden="true">
+                3
+              </span>
+              The recruiter
+            </legend>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="field">
+                <label className="label" htmlFor="f-email">
+                  Recruiter email
+                </label>
+                <input id="f-email" className="input" {...bind("recruiterEmail")} inputMode="email" autoComplete="off" spellCheck={false} />
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="f-phone">
+                  Phone number
+                </label>
+                <input id="f-phone" className="input" {...bind("phone")} inputMode="tel" autoComplete="off" />
+              </div>
+              <div className="field sm:col-span-2">
+                <label className="label" htmlFor="f-recruiter">
+                  Recruiter name
+                </label>
+                <input id="f-recruiter" className="input" {...bind("recruiterName")} autoComplete="off" />
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>
+              <span className="step-num" aria-hidden="true">
+                4
+              </span>
+              The role
+            </legend>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="field">
+                <label className="label" htmlFor="f-title">
+                  Job title
+                </label>
+                <input id="f-title" className="input" {...bind("jobTitle")} autoComplete="off" />
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="f-role">
+                  Role description
+                </label>
+                <textarea id="f-role" className="textarea h-24" {...bind("roleDescription")} />
+              </div>
+            </div>
+          </fieldset>
+
+          {error ? (
+            <p role="alert" className="callout callout-error">
+              {error}
+            </p>
+          ) : null}
+
+          <div className="submit-bar">
+            <button type="submit" disabled={submitting} className="btn-primary w-full sm:w-auto">
+              {submitting ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Checking the offer…
+                </>
+              ) : (
+                "Check this offer"
+              )}
+            </button>
+            <p className="hint">Takes up to 20 seconds. You&apos;ll get a report with every red flag explained.</p>
           </div>
-        </section>
-
-        <section className="card space-y-4">
-          <p className="label">Recruiter Context</p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="label">Recruiter email</span>
-              <input className="input" {...bind("recruiterEmail")} />
-            </label>
-            <label className="space-y-2">
-              <span className="label">Phone number</span>
-              <input className="input" {...bind("phone")} />
-            </label>
-          </div>
-          <label className="space-y-2">
-            <span className="label">Recruiter name</span>
-            <input className="input" {...bind("recruiterName")} />
-          </label>
-          <label className="space-y-2">
-            <span className="label">Full offer/email text</span>
-            <textarea className="textarea h-36" {...bind("offerText")} />
-          </label>
-        </section>
-
-        <section className="card space-y-4">
-          <p className="label">Public Presence</p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="label">Company website URL</span>
-              <input className="input" {...bind("website")} />
-            </label>
-            <label className="space-y-2">
-              <span className="label">LinkedIn URL</span>
-              <input className="input" {...bind("linkedinUrl")} />
-            </label>
-          </div>
-        </section>
-
-        <section className="card space-y-4">
-          <p className="label">Payment & Offer Text</p>
-          <label className="space-y-2">
-            <span className="label">Payment request text</span>
-            <textarea className="textarea h-28" {...bind("paymentText")} />
-          </label>
-          <label className="space-y-2">
-            <span className="label">Paste text from offer letter PDF/image</span>
-            <textarea className="textarea h-36" {...bind("extractedText")} />
-          </label>
-        </section>
-
-        <section className="card space-y-4">
-          <p className="label">Role Context</p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="label">Job title</span>
-              <input className="input" {...bind("jobTitle")} />
-            </label>
-            <label className="space-y-2">
-              <span className="label">Role description</span>
-              <textarea className="textarea h-24" {...bind("roleDescription")} />
-            </label>
-          </div>
-        </section>
-
-        {error ? <p className="card text-sm" style={{ color: "var(--danger)", background: "var(--danger-bg)" }}>{error}</p> : null}
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className="btn-primary w-full"
-        >
-          {submitting ? "Analyzing..." : "Analyze offer"}
-        </button>
-      </form>
+        </form>
+      </div>
     </div>
   );
 }
