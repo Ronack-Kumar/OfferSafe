@@ -1,9 +1,10 @@
+import { MISSING_SUPABASE_ENV, supabasePublicKey } from "@/lib/supabase-key";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const SUPABASE_ANON = supabasePublicKey();
 
 function getHeaders(extra?: HeadersInit): HeadersInit {
   if (!SUPABASE_URL || !SUPABASE_ANON) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    throw new Error(MISSING_SUPABASE_ENV);
   }
   return {
     "Content-Type": "application/json",

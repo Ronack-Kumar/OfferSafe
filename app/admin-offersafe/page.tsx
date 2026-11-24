@@ -1,4 +1,5 @@
 "use client";
+import { supabasePublicKey } from "@/lib/supabase-key";
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -40,7 +41,7 @@ export default function AdminOfferSafePage() {
   const [error, setError] = useState<string | null>(null);
 
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const anon = supabasePublicKey();
 
   async function load() {
     try {
