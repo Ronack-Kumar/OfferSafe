@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { MISSING_SUPABASE_ENV, supabasePublicKey } from "@/lib/supabase-key";
+import { checkSpam, HONEYPOT_FIELD, spamMessage, STARTED_AT_FIELD, visitorKey } from "@/lib/spam-guard";
 import {
   evidenceText,
   newProofFolder,
@@ -104,6 +105,19 @@ export async function POST(req: Request) {
     form = await req.formData();
   } catch {
     return NextResponse.json({ error: "Couldn't read the form. Please try again." }, { status: 400 });
+  }
+
+  const guard = checkSpam(
+    { honeypot: form.get(HONEYPOT_FIELD), startedAt: form.get(STARTED_AT_FIELD), key: visitorKey(req.headers, "report") },
+    { max: 5, windowMs: 30 * 60 * 1000 },
+  );
+  if (!guard.ok) {
+    // Bots that fill the hidden field get a normal-looking reply and nothing is saved.
+    if (guard.reason === "bot") return NextResponse.json({ id: "received", status: "pending_review", report_count: 1, signal_count: 0, files_saved: 0, files_failed: 0 });
+    return NextResponse.json(
+      { error: spamMessage(guard).replace("sent several messages", "sent several reports") },
+      { status: guard.reason === "rate_limited" ? 429 : 400, headers: guard.retryAfterSeconds ? { "Retry-After": String(guard.retryAfterSeconds) } : undefined },
+    );
   }
 
   const parsed = parseReportForm(form);

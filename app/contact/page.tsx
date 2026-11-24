@@ -1,11 +1,15 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import HoneypotField from "@/components/honeypot-field";
+import { HONEYPOT_FIELD, STARTED_AT_FIELD } from "@/lib/spam-fields";
 
 export default function ContactPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
+  const [trap, setTrap] = useState("");
+  const [startedAt] = useState(() => Date.now());
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -19,7 +23,7 @@ export default function ContactPage() {
       const res = await fetch("/api/contact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, message }),
+        body: JSON.stringify({ name, email, message, [HONEYPOT_FIELD]: trap, [STARTED_AT_FIELD]: startedAt }),
       });
       const data = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) throw new Error(data.error || "Failed to submit");
@@ -41,7 +45,8 @@ export default function ContactPage() {
         Found a scam we missed? Have feedback? We&apos;d love to hear from you.
       </p>
 
-      <form onSubmit={onSubmit} className="card space-y-4">
+      <form onSubmit={onSubmit} className="card relative space-y-4">
+        <HoneypotField value={trap} onChange={setTrap} />
         <label className="space-y-1">
           <span className="label">Name</span>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
