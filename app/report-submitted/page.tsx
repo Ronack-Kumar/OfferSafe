@@ -3,38 +3,41 @@ import Link from "next/link";
 type SearchParams = {
   id?: string;
   signals?: string;
-  auto_verified?: string;
   status?: string;
+  files_failed?: string;
 };
 
 export default function ReportSubmittedPage({ searchParams }: { searchParams: SearchParams }) {
   const reportId = searchParams.id || "Unavailable";
-  const signals = Number(searchParams.signals || 0);
-  const autoVerified = searchParams.auto_verified === "1";
-  const status = searchParams.status || "pending_review";
+  const signals = Math.max(0, Number(searchParams.signals || 0) || 0);
+  const filesFailed = Math.max(0, Number(searchParams.files_failed || 0) || 0);
+  const lowConfidence = searchParams.status === "low_confidence";
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <section className="card space-y-4">
-        <p className="label" style={{ color: "var(--safe)" }}>Submission received</p>
-        <h1 className="text-3xl">Thank you for helping protect students</h1>
-        <p>
-          Report reference ID: <span className="font-semibold">{reportId}</span>
+        <p className="label" style={{ color: "var(--safe)" }}>
+          Submission received
         </p>
-        <p className="text-sm" style={{ color: "var(--muted)" }}>We automatically detected {signals} suspicious signal{signals === 1 ? "" : "s"} in your report.</p>
-        {autoVerified ? (
-          <p className="card p-3 text-sm font-medium" style={{ background: "var(--safe-bg)", color: "var(--safe)" }}>
-            Your report has been automatically verified and added to our database.
+        <h1 className="text-3xl">Thank you for helping protect students</h1>
+        <p className="break-all">
+          Report reference: <span className="font-semibold">{reportId}</span>
+        </p>
+        {signals > 0 ? (
+          <p className="text-sm" style={{ color: "var(--muted)" }}>
+            We found {signals} warning sign{signals === 1 ? "" : "s"} in what you shared.
           </p>
-        ) : status === "pending_review" ? (
-          <p className="card p-3 text-sm font-medium" style={{ background: "var(--warning-bg)", color: "var(--warning)" }}>
-            Your report is under review. We&apos;ll verify it against other reports.
+        ) : null}
+        <p className="card p-3 text-sm font-medium" style={{ background: "var(--warning-bg)", color: "var(--warning)" }}>
+          {lowConfidence
+            ? "A moderator will review your report. Adding the offer text, payment details or a screenshot helps us confirm it faster."
+            : "A moderator will review your report. If it's confirmed, it's added to our list of known scams to warn other job seekers."}
+        </p>
+        {filesFailed > 0 ? (
+          <p className="text-sm" style={{ color: "var(--danger)" }}>
+            {filesFailed} attachment{filesFailed === 1 ? "" : "s"} couldn&apos;t be uploaded. The rest of your report was saved.
           </p>
-        ) : (
-          <p className="card p-3 text-sm font-medium" style={{ background: "#f3f4f6", color: "#374151" }}>
-            Your report is saved with low confidence and will be manually reviewed.
-          </p>
-        )}
+        ) : null}
       </section>
 
       <div className="flex flex-wrap gap-3">
