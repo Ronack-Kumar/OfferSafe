@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { checkSpam, HONEYPOT_FIELD, spamMessage, STARTED_AT_FIELD, visitorKey } from "@/lib/spam-guard";
 
 type ContactPayload = {
   name?: string;
   email?: string;
   message?: string;
+  [HONEYPOT_FIELD]?: string;
+  [STARTED_AT_FIELD]?: number;
 };
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -24,6 +27,19 @@ export async function POST(req: Request) {
   }
   if (!EMAIL.test(email) || name.length > 200 || message.length > 5000) {
     return NextResponse.json({ error: "Check your email address and keep the message under 5,000 characters." }, { status: 400 });
+  }
+
+  const guard = checkSpam(
+    { honeypot: body?.[HONEYPOT_FIELD], startedAt: body?.[STARTED_AT_FIELD], key: visitorKey(req.headers, "contact") },
+    { max: 5, windowMs: 10 * 60 * 1000 },
+  );
+  if (!guard.ok) {
+    // Bots that fill the hidden field get a normal-looking reply and nothing is sent.
+    if (guard.reason === "bot") return NextResponse.json({ ok: true }, { status: 200 });
+    return NextResponse.json(
+      { error: spamMessage(guard) },
+      { status: guard.reason === "rate_limited" ? 429 : 400, headers: guard.retryAfterSeconds ? { "Retry-After": String(guard.retryAfterSeconds) } : undefined },
+    );
   }
 
   const resendKey = process.env.RESEND_API_KEY;

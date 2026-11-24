@@ -148,3 +148,8 @@ export function secondsUntilExpiry(token: string, now = Date.now()): number {
 export async function adminRest(session: AdminSession, path: string, init: RequestInit = {}): Promise<Response | null> {
   return call(`/rest/v1/${path}`, { ...init, token: session.accessToken });
 }
+
+/** Storage API call made as the signed-in admin. */
+export async function adminStorage(session: AdminSession, path: string, init: RequestInit = {}): Promise<Response | null> {
+  return call(`/storage/v1/${path}`, { ...init, token: session.accessToken });
+}

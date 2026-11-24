@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PendingReport } from "@/lib/admin-reports";
+import ReportAttachments from "./report-attachments";
 import SignOutButton from "./sign-out-button";
 
 const OPEN = new Set(["pending", "pending_review", "low_confidence"]);
@@ -119,6 +120,7 @@ export default function AdminDashboard({ email }: { email: string }) {
               <div className="text-xs font-medium" style={{ color: "var(--muted)" }}>
                 Report count: {report.report_count ?? 1}
               </div>
+              <ReportAttachments reportId={report.id} count={Array.isArray(report.proof_urls) ? report.proof_urls.length : 0} />
               {OPEN.has(report.status) ? (
                 <div className="flex gap-2">
                   <button type="button" disabled={busyId === report.id} onClick={() => act(report.id, "approve")} className="btn-primary">
