@@ -107,19 +107,21 @@ export default function ReportScamPage() {
         method: "POST",
         body: payload,
       });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { id: string; signal_count: number; auto_verified: boolean; status: string };
+      const data = (await res.json().catch(() => null)) as
+        | { id?: string; status?: string; signal_count?: number; files_failed?: number; error?: string }
+        | null;
+      if (!res.ok || !data?.id) throw new Error(data?.error || "We couldn't save your report. Please try again.");
 
       setForm(initial);
       setFiles([]);
-      setMessage(
-        data.auto_verified
-          ? "Report submitted and auto-verified successfully."
-          : "Report submitted successfully. Thank you for helping the community.",
-      );
-      router.push(
-        `/report-submitted?id=${encodeURIComponent(data.id)}&signals=${data.signal_count}&auto_verified=${data.auto_verified ? "1" : "0"}&status=${encodeURIComponent(data.status)}`,
-      );
+      setMessage("Report submitted. Thank you for helping the community.");
+      const query = new URLSearchParams({
+        id: data.id,
+        status: data.status || "pending_review",
+        signals: String(data.signal_count ?? 0),
+        files_failed: String(data.files_failed ?? 0),
+      });
+      router.push(`/report-submitted?${query.toString()}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Submission failed");
     } finally {
