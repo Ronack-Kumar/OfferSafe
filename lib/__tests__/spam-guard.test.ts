@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { checkSpam, MIN_FILL_MS, resetSpamGuard, spamMessage, visitorKey } from "../spam-guard";
+import { checkSpam, clientIp, MIN_FILL_MS, resetSpamGuard, spamMessage, visitorKey } from "../spam-guard";
 
 const limit = { max: 3, windowMs: 60_000 };
 const now = 1_000_000_000;
@@ -33,10 +33,24 @@ describe("checkSpam", () => {
 });
 
 describe("visitorKey", () => {
-  it("hashes IP and user agent per form", () => {
-    const h = new Headers({ "x-forwarded-for": "1.2.3.4, 10.0.0.1", "user-agent": "UA" });
+  it("hashes the client IP per form", () => {
+    const h = new Headers({ "x-real-ip": "1.2.3.4" });
     expect(visitorKey(h, "contact")).toMatch(/^contact:[0-9a-f]{64}$/);
     expect(visitorKey(h, "contact")).not.toBe(visitorKey(h, "report"));
     expect(visitorKey(h, "contact")).not.toContain("1.2.3.4");
+  });
+
+  it("can't be dodged by changing the user agent", () => {
+    const a = new Headers({ "x-real-ip": "1.2.3.4", "user-agent": "bot/1" });
+    const b = new Headers({ "x-real-ip": "1.2.3.4", "user-agent": "bot/2" });
+    expect(visitorKey(a, "contact")).toBe(visitorKey(b, "contact"));
+  });
+
+  it("prefers the platform-set IP over a forged x-forwarded-for", () => {
+    const forged = new Headers({ "x-forwarded-for": "9.9.9.9, 1.2.3.4", "x-real-ip": "1.2.3.4" });
+    expect(clientIp(forged)).toBe("1.2.3.4");
+    expect(clientIp(new Headers({ "x-vercel-forwarded-for": "5.6.7.8", "x-real-ip": "1.2.3.4" }))).toBe("5.6.7.8");
+    // Without platform headers, use the hop closest to the server, not the client-supplied first one.
+    expect(clientIp(new Headers({ "x-forwarded-for": "9.9.9.9, 1.2.3.4" }))).toBe("1.2.3.4");
   });
 });

@@ -16,7 +16,7 @@ export const MIN_FILL_MS = 3000;
 
 export type GuardResult = { ok: true } | { ok: false; reason: "bot" | "too_fast" | "rate_limited"; retryAfterSeconds?: number };
 
-type Window = { hits: number[] };
+type Window = { hits: number[]; windowMs: number };
 const windows = new Map<string, Window>();
 
 /** Test hook. */
@@ -24,10 +24,22 @@ export function resetSpamGuard(): void {
   windows.clear();
 }
 
+/**
+ * The visitor's IP as set by the hosting platform. On Vercel, x-real-ip and
+ * x-vercel-forwarded-for are written by the edge (client values are overwritten), so
+ * they're preferred over the leftmost x-forwarded-for entry, which a client can forge
+ * where no proxy rewrites it. The user agent is deliberately not part of the key: it's
+ * client-controlled and would let a bot dodge the limit by rotating it.
+ */
+export function clientIp(headers: Headers): string {
+  const vercel = headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim();
+  const real = headers.get("x-real-ip")?.trim();
+  const xff = headers.get("x-forwarded-for")?.split(",").map((s) => s.trim()).filter(Boolean);
+  return vercel || real || xff?.[xff.length - 1] || "unknown";
+}
+
 export function visitorKey(headers: Headers, scope: string): string {
-  const ip = (headers.get("x-forwarded-for") || "").split(",")[0]?.trim() || headers.get("x-real-ip") || "unknown";
-  const ua = headers.get("user-agent") || "unknown";
-  return `${scope}:${createHash("sha256").update(`${ip}|${ua}`).digest("hex")}`;
+  return `${scope}:${createHash("sha256").update(clientIp(headers)).digest("hex")}`;
 }
 
 export function checkSpam(
@@ -40,7 +52,8 @@ export function checkSpam(
   const started = Number(input.startedAt);
   if (Number.isFinite(started) && started > 0 && now - started < MIN_FILL_MS) return { ok: false, reason: "too_fast" };
 
-  const w = windows.get(input.key) ?? { hits: [] };
+  const w = windows.get(input.key) ?? { hits: [], windowMs: limit.windowMs };
+  w.windowMs = limit.windowMs;
   w.hits = w.hits.filter((t) => now - t < limit.windowMs);
   if (w.hits.length >= limit.max) {
     const retryAfterSeconds = Math.ceil((limit.windowMs - (now - w.hits[0])) / 1000);
@@ -52,9 +65,11 @@ export function checkSpam(
 
   // Keep memory bounded on long-lived instances.
   if (windows.size > 5000) {
-    for (const [k, v] of windows) {
-      if (!v.hits.some((t) => now - t < limit.windowMs)) windows.delete(k);
-    }
+    windows.forEach((v, k) => {
+      // Each entry is cleaned with its own window, so a short-window form can't
+      // evict a long-window form's history early.
+      if (!v.hits.some((t) => now - t < v.windowMs)) windows.delete(k);
+    });
   }
   return { ok: true };
 }
