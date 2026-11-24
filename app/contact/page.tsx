@@ -40,9 +40,6 @@ export default function ContactPage() {
       <p style={{ color: "var(--muted)" }}>
         Found a scam we missed? Have feedback? We&apos;d love to hear from you.
       </p>
-      <p className="text-sm" style={{ color: "var(--muted)" }}>
-        Contact: offersafe.india@gmail.com
-      </p>
 
       <form onSubmit={onSubmit} className="card space-y-4">
         <label className="space-y-1">
