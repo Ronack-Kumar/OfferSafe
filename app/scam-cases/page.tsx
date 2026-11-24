@@ -12,14 +12,19 @@ type ScamCase = {
   description: string;
 };
 
-function severityClass(severity: string): string {
-  if (severity === "high") return "status-badge border" + " border-[#f5c6c2] bg-[var(--danger-bg)] text-[var(--danger)]";
-  if (severity === "medium") return "status-badge border" + " border-[#f5e6a3] bg-[var(--warning-bg)] text-[var(--warning)]";
-  return "status-badge border border-[#d1d5db] bg-[#f3f4f6] text-[#374151]";
+function typeLabel(type: string): string {
+  if (type === "all") return "All types";
+  const t = type.replace(/_/g, " ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function severityLabel(severity: string): string {
+  return severity ? severity.charAt(0).toUpperCase() + severity.slice(1) : "Unknown";
 }
 
 export default function ScamCasesPage() {
   const [rows, setRows] = useState<ScamCase[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [scamType, setScamType] = useState("all");
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +46,8 @@ export default function ScamCasesPage() {
         setRows((await res.json()) as ScamCase[]);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load scam cases");
+      } finally {
+        setLoading(false);
       }
     }
     load();
@@ -56,77 +63,134 @@ export default function ScamCasesPage() {
     });
   }, [rows, scamType, search]);
 
+  function clearFilters() {
+    setSearch("");
+    setScamType("all");
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="wrap pb-8 pt-6">
+      <div className="mb-10 grid gap-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <div>
-          <h1 className="text-3xl">Known scam cases</h1>
-          <p style={{ color: "var(--muted)" }}>Browse approved patterns currently in OfferSafe.</p>
+          <p className="eyebrow mb-3">Scam register</p>
+          <h1 className="page-title mb-4">The register of known scams.</h1>
+          <p className="lede">
+            Every case here was reported and checked. If your recruiter&apos;s name, email or website matches one, your report
+            says so.
+          </p>
         </div>
-        <Link href="/report-a-scam" className="btn-primary inline-flex items-center">
+        <Link href="/report-a-scam" className="btn-primary">
           Report a scam
         </Link>
       </div>
 
-      <div className="card grid gap-4 sm:grid-cols-2">
-        <label className="space-y-1">
-          <span className="label">Search by company name</span>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input"
-            placeholder="Type company/case name"
-          />
-        </label>
-        <label className="space-y-1">
-          <span className="label">Filter by scam type</span>
-          <select
-            value={scamType}
-            onChange={(e) => setScamType(e.target.value)}
-            className="select"
-          >
-            {scamTypes.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="reg-tools">
+        <div className="chips-filter" role="group" aria-label="Filter by scam type">
+          {scamTypes.map((type) => (
+            <button key={type} type="button" className="chipbtn" aria-pressed={scamType === type} onClick={() => setScamType(type)}>
+              {typeLabel(type)}
+            </button>
+          ))}
+        </div>
+        <div className="reg-search">
+          <label htmlFor="register-search" className="label">
+            Search by company name
+          </label>
+          <div className="search-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <input id="register-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="e.g. TechNova" />
+          </div>
+        </div>
       </div>
 
-      {error ? <p className="card p-3 text-sm" style={{ background: "var(--danger-bg)", color: "var(--danger)" }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" className="callout callout-error mb-4">
+          We couldn&apos;t load the register right now. Please refresh the page.
+        </p>
+      ) : null}
 
-      <div className="overflow-x-auto card p-0">
-        <table className="min-w-full text-left text-sm">
-          <thead style={{ background: "#f4f3ef", color: "var(--foreground)" }}>
+      <div className="register" aria-busy={loading}>
+        <table>
+          <caption className="sr-only">Known scam cases</caption>
+          <thead>
             <tr>
-              <th className="px-4 py-3 font-semibold">Case name</th>
-              <th className="px-4 py-3 font-semibold">Scam type</th>
-              <th className="px-4 py-3 font-semibold">Severity</th>
-              <th className="px-4 py-3 font-semibold">Description</th>
+              <th scope="col" className="col-no">
+                No.
+              </th>
+              <th scope="col">Case</th>
+              <th scope="col">Type</th>
+              <th scope="col">Severity</th>
+              <th scope="col">What happens</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((row) => (
-              <tr key={row.id} style={{ borderTop: "1px solid var(--card-border)" }}>
-                <td className="px-4 py-3 font-medium">{row.case_name}</td>
-                <td className="px-4 py-3">{row.scam_type}</td>
-                <td className="px-4 py-3">
-                  <span className={severityClass(row.severity)}>{row.severity}</span>
-                </td>
-                <td className="px-4 py-3" style={{ color: "var(--muted)" }}>{row.description}</td>
-              </tr>
-            ))}
-            {!filtered.length ? (
-              <tr>
-                <td colSpan={4} className="px-4 py-6 text-center" style={{ color: "var(--muted)" }}>
-                  No cases match your filters.
-                </td>
-              </tr>
-            ) : null}
+            {loading
+              ? Array.from({ length: 4 }, (_, i) => (
+                  <tr key={i} className="reg-skeleton" aria-hidden="true">
+                    <td className="col-no">
+                      <span />
+                    </td>
+                    <td>
+                      <span />
+                    </td>
+                    <td>
+                      <span />
+                    </td>
+                    <td>
+                      <span />
+                    </td>
+                    <td>
+                      <span />
+                    </td>
+                  </tr>
+                ))
+              : filtered.map((row, i) => (
+                  <tr key={row.id} style={{ animationDelay: `${Math.min(i, 10) * 40}ms` }}>
+                    <td className="col-no" data-label="No.">
+                      {String(rows.indexOf(row) + 1).padStart(3, "0")}
+                    </td>
+                    <td className="reg-name" data-label="Case">
+                      {row.case_name}
+                    </td>
+                    <td data-label="Type">{typeLabel(row.scam_type)}</td>
+                    <td data-label="Severity">
+                      <span className={`reg-sev reg-sev-${row.severity}`}>{severityLabel(row.severity)}</span>
+                    </td>
+                    <td className="reg-desc" data-label="What happens">
+                      {row.description}
+                    </td>
+                  </tr>
+                ))}
           </tbody>
         </table>
+        {!loading && !error && !filtered.length ? (
+          <div className="reg-empty">
+            <p>
+              {rows.length
+                ? `No cases match${search ? ` “${search}”` : ""}. That doesn't make the offer safe, so check the offer itself.`
+                : "The register is empty right now."}
+            </p>
+            {rows.length ? (
+              <div className="mt-4 flex flex-wrap justify-center gap-3">
+                <button type="button" className="btn-secondary" onClick={clearFilters}>
+                  Clear filters
+                </button>
+                <Link href="/analyze" className="btn-primary">
+                  Check an offer
+                </Link>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+      {!loading && rows.length ? (
+        <p className="hint mt-3" aria-live="polite">
+          Showing {filtered.length} of {rows.length} cases.
+        </p>
+      ) : null}
     </div>
   );
 }

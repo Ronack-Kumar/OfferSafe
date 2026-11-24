@@ -34,50 +34,45 @@ export function RedditSection({
   available: boolean;
 }) {
   return (
-    <section className="card space-y-3">
-      <h2 className="text-xl font-semibold">Community reports found</h2>
+    <section aria-labelledby="reddit-title">
+      <h2 id="reddit-title" className="sub-title">
+        Community reports
+      </h2>
 
       {posts.length === 0 ? (
-        <p className="text-sm text-slate-600">
+        <p className="text-[var(--graphite)]">
           {available
             ? "No clear scam reports about this company were found on Reddit."
             : "Reddit search was unavailable for this report, so community reports weren't checked."}
         </p>
       ) : (
-        <div className="space-y-3">
+        <div className="grid gap-3">
           {posts.map((post) => {
             const topComments = [...(comments[post.id] ?? [])].sort((a, b) => b.score - a.score).slice(0, 2);
             return (
-              <article key={post.id} className="rounded-lg border border-slate-200 p-4">
+              <article key={post.id} className="rcheck">
                 <a
                   href={`https://www.reddit.com${post.permalink}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-sm font-semibold hover:underline"
-                  style={{ color: "var(--accent)" }}
+                  className="font-semibold underline decoration-[var(--line)] underline-offset-4 hover:decoration-[var(--ink)]"
                 >
                   {post.title}
                 </a>
-                <p className="mt-1 text-xs text-slate-600">
-                  r/{post.subreddit} | Upvotes: {post.score}
+                <p className="hint mt-1">
+                  r/{post.subreddit} · {post.score} upvotes
                 </p>
 
                 {topComments.length > 0 && (
-                  <div className="mt-3 space-y-2 rounded bg-slate-50 p-3">
-                    <p className="label" style={{ color: "var(--muted)" }}>
-                      Top community responses:
-                    </p>
+                  <div className="mt-3 space-y-2">
+                    <p className="text-sm font-semibold">Top replies</p>
                     {topComments.map((comment) => (
-                      <div
-                        key={comment.id}
-                        className="rounded border p-2"
-                        style={{ borderColor: "var(--card-border)", background: "#fff" }}
-                      >
-                        <p className="text-xs">{truncateComment(comment.body)}</p>
-                        <p className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
-                          u/{comment.author} | Upvotes: {comment.score}
+                      <blockquote key={comment.id} className="doc m-0 border-l-[3px] border-[var(--hl)] pl-3 text-[14px]">
+                        <p className="m-0">{truncateComment(comment.body)}</p>
+                        <p className="hint mt-1 font-[family-name:var(--font-ui)]">
+                          u/{comment.author} · {comment.score} upvotes
                         </p>
-                      </div>
+                      </blockquote>
                     ))}
                   </div>
                 )}
