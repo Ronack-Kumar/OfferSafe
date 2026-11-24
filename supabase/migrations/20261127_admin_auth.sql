@@ -57,3 +57,10 @@ CREATE POLICY "pending_reports admin update" ON public.pending_reports
   FOR UPDATE TO authenticated
   USING (public.is_offersafe_admin())
   WITH CHECK (public.is_offersafe_admin());
+
+-- 4. Column-level limit: with the public key, an update may only touch the bookkeeping
+--    columns /api/report-scam maintains. Without this, anyone could rewrite a report's
+--    company, email or description before an admin approves it into scam_cases.
+--    Admin approve/reject only changes status.
+REVOKE UPDATE ON public.pending_reports FROM anon, authenticated;
+GRANT UPDATE (status, report_count, auto_verified) ON public.pending_reports TO anon, authenticated;
