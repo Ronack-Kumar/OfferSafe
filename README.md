@@ -137,3 +137,21 @@ Without credentials, or if Reddit stops responding, it is skipped and the report
 ---
 
 *Not legal advice. For awareness only.*
+
+## Admin access
+
+`/admin-offersafe` is for moderators and isn't linked from the site. It uses Supabase Auth (email + password), and every check runs on the server:
+
+- The admin page and every `/api/admin/*` route verify the session with Supabase Auth, then call the database function `is_offersafe_admin()`.
+- Approve and reject are made with the admin's own access token, so the RLS policies on `pending_reports` enforce admin-only decisions again in the database. The service role key is never used at runtime.
+- Sessions are stored in httpOnly, SameSite=Lax cookies and refreshed by `middleware.ts`.
+
+To set up an admin:
+
+1. Apply `supabase/migrations/20261127_admin_auth.sql`.
+2. In Supabase > Authentication > Users, click **Add user**, enter your email and a strong password, and tick **Auto Confirm User**.
+3. Add the email to the allow-list (lowercase):
+   ```sql
+   INSERT INTO public.offersafe_admins (email) VALUES ('you@example.com');
+   ```
+4. Recommended: turn off public sign-ups in Supabase > Authentication > Sign In / Providers. Admin access never depends on it, but it keeps the users list clean.
