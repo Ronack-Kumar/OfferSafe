@@ -2,6 +2,8 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import HoneypotField from "@/components/honeypot-field";
+import { HONEYPOT_FIELD, STARTED_AT_FIELD } from "@/lib/spam-fields";
 
 type ReportForm = {
   company_name: string;
@@ -46,6 +48,8 @@ export default function ReportScamPage() {
   const [form, setForm] = useState<ReportForm>(initial);
   const [step, setStep] = useState(1);
   const [files, setFiles] = useState<File[]>([]);
+  const [trap, setTrap] = useState("");
+  const [startedAt] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +106,8 @@ export default function ReportScamPage() {
       for (const file of files) {
         payload.append("proof_files", file);
       }
+      payload.append(HONEYPOT_FIELD, trap);
+      payload.append(STARTED_AT_FIELD, String(startedAt));
 
       const res = await fetch("/api/report-scam", {
         method: "POST",
@@ -146,7 +152,8 @@ export default function ReportScamPage() {
         </div>
       </div>
 
-      <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={submit} className="relative space-y-4">
+        <HoneypotField value={trap} onChange={setTrap} />
         {step === 1 ? (
           <div className="card grid gap-4 sm:grid-cols-2">
             <label className="space-y-1 sm:col-span-2">
