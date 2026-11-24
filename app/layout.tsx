@@ -53,7 +53,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   OfferSafe
                 </p>
                 <p className="text-sm">Helping students and job-seekers detect suspicious offers before they commit.</p>
-                <p className="mt-2 text-sm">Contact: offersafe.india@gmail.com</p>
               </div>
               <div className="flex flex-col gap-2 text-sm sm:items-end">
                 <Link href="/scam-cases" className="hover:text-white">
