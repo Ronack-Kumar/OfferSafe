@@ -1,4 +1,4 @@
-import { adminRest, type AdminSession } from "./admin-auth";
+import { adminRest, adminStorage, type AdminSession } from "./admin-auth";
 
 /** Report statuses an admin can still approve or reject. */
 export const OPEN_STATUSES = ["pending", "pending_review", "low_confidence"] as const;
@@ -16,10 +16,11 @@ export type PendingReport = {
   source_url: string | null;
   report_count: number | null;
   status: string;
+  proof_urls: string[] | null;
 };
 
 const REPORT_COLUMNS =
-  "id,submitted_at,company_name,recruiter_email,website,cin,what_happened,evidence_text,source,source_url,report_count,status";
+  "id,submitted_at,company_name,recruiter_email,website,cin,what_happened,evidence_text,source,source_url,report_count,status,proof_urls";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -98,4 +99,35 @@ export async function approveReport(session: AdminSession, id: string): Promise<
     return { ok: false, httpStatus: 502, error: "Couldn't publish the scam case. The report is still pending." };
   }
   return { ok: true, status: "approved" };
+}
+
+export type ProofLink = { name: string; url: string };
+
+const PROOF_PATH = /^reports\/[0-9a-f]{16}\/[A-Za-z0-9_-]{1,100}\.(pdf|jpg|png)$/;
+const PROOF_LINK_SECONDS = 300;
+
+/**
+ * Short-lived download links for a report's attachments. Signed with the admin's own
+ * token, so storage RLS ("report proofs admin read") decides access.
+ */
+export async function proofLinks(session: AdminSession, id: string): Promise<ProofLink[] | null> {
+  const res = await adminRest(session, `pending_reports?id=eq.${id}&select=proof_urls`);
+  if (!res?.ok) return null;
+  const rows = (await res.json()) as Array<{ proof_urls: unknown }>;
+  const paths = Array.isArray(rows[0]?.proof_urls) ? (rows[0].proof_urls as unknown[]).filter((p): p is string => typeof p === "string" && PROOF_PATH.test(p)) : [];
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base) return null;
+
+  const links = await Promise.all(
+    paths.map(async (path) => {
+      const signed = await adminStorage(session, `object/sign/report-proofs/${path}`, {
+        method: "POST",
+        body: JSON.stringify({ expiresIn: PROOF_LINK_SECONDS }),
+      });
+      if (!signed?.ok) return null;
+      const body = (await signed.json().catch(() => null)) as { signedURL?: string } | null;
+      return body?.signedURL ? { name: path.split("/").pop() ?? path, url: `${base}/storage/v1${body.signedURL}` } : null;
+    }),
+  );
+  return links.filter((l): l is ProofLink => l !== null);
 }

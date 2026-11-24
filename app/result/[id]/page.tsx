@@ -2,7 +2,9 @@ import { notFound } from "next/navigation";
 import { RedditSection } from "@/components/reddit-section";
 import Link from "next/link";
 import { DownloadReportButton } from "@/components/download-report-button";
-import { supabaseGet } from "@/lib/supabase-rest";
+import { supabaseGet, supabasePost } from "@/lib/supabase-rest";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type CaseRow = {
   id: string;
@@ -112,7 +114,9 @@ function severityBadgeClass(severity: string): string {
 }
 
 export default async function ResultPage({ params }: { params: { id: string } }) {
-  const rows = await supabaseGet<CaseRow[]>(`cases?id=eq.${params.id}&select=*`);
+  // Reports are fetched one at a time by id (get_case), never listed.
+  if (!UUID.test(params.id)) notFound();
+  const rows = await supabasePost<CaseRow[]>("rpc/get_case", { case_id: params.id });
   const row = rows[0];
   if (!row) notFound();
 
